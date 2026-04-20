@@ -1,0 +1,61 @@
+#pragma once
+#include <cstdint>
+#include <cstring>
+#include <string>
+#include <vector>
+
+// Simple hand-rolled IPC types. Wire format: 4-byte LE message type + 4-byte LE payload length + payload.
+// All structs are fixed-size where possible; variable-length fields use length-prefixed encoding.
+
+static constexpr uint32_t GLA_IPC_MAGIC = 0x474C4100; // 'GLA\0'
+
+enum class GLAMsgType : uint32_t {
+    // Daemon -> Driver
+    ChannelMapUpdate   = 1,
+    // App -> Daemon
+    GetStatus          = 10,
+    GetEntityList      = 11,
+    SetRouting         = 12,
+    SetNetworkInterface = 13,
+    SetUSBBridge       = 14,
+    // Daemon -> App
+    StatusResponse     = 20,
+    EntityListResponse = 21,
+    RoutingChanged     = 22,
+};
+
+struct GLAChannelEntry {
+    uint8_t  channel_index;
+    uint64_t entity_id;
+    char     display_name[64]; // UTF-8, null-terminated
+};
+
+struct GLAEntityInfo {
+    uint64_t entity_id;
+    char     name[64];
+    uint8_t  stream_count;
+    bool     online;
+};
+
+// Variable-length message helpers — serialise to/from a byte vector.
+// Header: [type:u32 LE][count:u32 LE][entries...]
+
+inline std::vector<uint8_t> serializeChannelMapUpdate(const std::vector<GLAChannelEntry>& entries) {
+    uint32_t type  = static_cast<uint32_t>(GLAMsgType::ChannelMapUpdate);
+    uint32_t count = static_cast<uint32_t>(entries.size());
+    std::vector<uint8_t> buf(8 + count * sizeof(GLAChannelEntry));
+    memcpy(buf.data(),     &type,  4);
+    memcpy(buf.data() + 4, &count, 4);
+    memcpy(buf.data() + 8, entries.data(), count * sizeof(GLAChannelEntry));
+    return buf;
+}
+
+inline std::vector<uint8_t> serializeEntityList(const std::vector<GLAEntityInfo>& entities) {
+    uint32_t type  = static_cast<uint32_t>(GLAMsgType::EntityListResponse);
+    uint32_t count = static_cast<uint32_t>(entities.size());
+    std::vector<uint8_t> buf(8 + count * sizeof(GLAEntityInfo));
+    memcpy(buf.data(),     &type,  4);
+    memcpy(buf.data() + 4, &count, 4);
+    memcpy(buf.data() + 8, entities.data(), count * sizeof(GLAEntityInfo));
+    return buf;
+}

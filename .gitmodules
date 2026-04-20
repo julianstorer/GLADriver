@@ -1,0 +1,6 @@
+[submodule "third_party/libASPL"]
+	path = third_party/libASPL
+	url = https://github.com/gavv/libASPL.git
+[submodule "third_party/avdecc"]
+	path = third_party/avdecc
+	url = https://github.com/L-Acoustics/avdecc.git
