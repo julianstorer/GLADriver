@@ -8,7 +8,9 @@ class GLAUSBReader;
 class GLAUnifiedDevice;
 class GLAIPCClient;
 
-class GLADriver : public aspl::Driver {
+//==============================================================================
+class GLADriver : public aspl::Driver
+{
 public:
     GLADriver();
     ~GLADriver() override;
@@ -16,11 +18,10 @@ public:
 protected:
     OSStatus Initialize() override;
 
-    // Called on the control thread when daemon sends a ChannelMapUpdate.
-    void applyChannelMap(const std::vector<GLAChannelEntry>& entries);
+    void applyChannelMap (const std::vector<GLAChannelEntry>& entries);
 
 private:
-    std::shared_ptr<GLAUSBReader>    _usbReader;
-    std::shared_ptr<GLAIPCClient>    _ipcClient;
-    std::shared_ptr<GLAUnifiedDevice> _unifiedDevice;
+    std::shared_ptr<GLAUSBReader>     usbReader;
+    std::shared_ptr<GLAIPCClient>     ipcClient;
+    std::shared_ptr<GLAUnifiedDevice> unifiedDevice;
 };

@@ -34,6 +34,5 @@ enable_testing()
 
 add_subdirectory(common)
 add_subdirectory(driver)
-add_subdirectory(daemon)
 add_subdirectory(app)
 add_subdirectory(tests)

@@ -24,20 +24,7 @@ sudo launchctl kickstart -k system/com.apple.audio.coreaudiod 2>/dev/null || \
     sudo kill $(cat /var/run/coreaudiod.pid 2>/dev/null) 2>/dev/null || true
 sleep 2
 
-# Install daemon.
-echo "Installing daemon ..."
-sudo cp "$BUILD_DIR/bin/gla_daemon" /usr/local/bin/
-sudo chmod 755 /usr/local/bin/gla_daemon
-
-# Install launchd plist (user agent, so no sudo needed for the plist itself).
-PLIST="$BUILD_DIR/../daemon/plist/com.greenlight.gla-daemon.plist"
-LAUNCH_AGENTS="$HOME/Library/LaunchAgents"
-mkdir -p "$LAUNCH_AGENTS"
-cp "$PLIST" "$LAUNCH_AGENTS/"
-launchctl unload "$LAUNCH_AGENTS/com.greenlight.gla-daemon.plist" 2>/dev/null || true
-launchctl load "$LAUNCH_AGENTS/com.greenlight.gla-daemon.plist"
-
 echo ""
 echo "Installation complete!"
 echo "Verify with: system_profiler SPAudioDataType | grep -A5 'GLA Injector'"
-echo "Daemon logs: tail -f /tmp/gla-daemon.log"
+echo "Launch 'GLA Injector.app' to enable AVB routing."

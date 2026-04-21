@@ -8,11 +8,11 @@
 static GLADriver* gDriver = nullptr;
 
 extern "C" __attribute__((visibility("default")))
-void* GLAInjector_Create(CFAllocatorRef /*allocator*/, CFUUIDRef requestedTypeUUID) {
-    if (!CFEqual(requestedTypeUUID, kAudioServerPlugInTypeUUID))
+void* GLAInjector_Create (CFAllocatorRef /*allocator*/, CFUUIDRef requestedTypeUUID)
+{
+    if (!CFEqual (requestedTypeUUID, kAudioServerPlugInTypeUUID))
         return nullptr;
-    if (!gDriver) {
+    if (!gDriver)
         gDriver = new GLADriver();
-    }
     return gDriver->GetReference();
 }
