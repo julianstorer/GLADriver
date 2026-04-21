@@ -1,12 +1,11 @@
 #pragma once
 #include <aspl/Driver.hpp>
 #include <memory>
-#include <unordered_map>
 #include <vector>
 #include "../common/gla_ipc_types.hpp"
 
 class GLAUSBReader;
-class GLAEntityDevice;
+class GLAUnifiedDevice;
 class GLAIPCClient;
 
 class GLADriver : public aspl::Driver {
@@ -21,9 +20,7 @@ protected:
     void applyChannelMap(const std::vector<GLAChannelEntry>& entries);
 
 private:
-    std::shared_ptr<GLAUSBReader>  _usbReader;
-    std::shared_ptr<GLAIPCClient>  _ipcClient;
-
-    // entity_id -> device
-    std::unordered_map<uint64_t, std::shared_ptr<GLAEntityDevice>> _devices;
+    std::shared_ptr<GLAUSBReader>    _usbReader;
+    std::shared_ptr<GLAIPCClient>    _ipcClient;
+    std::shared_ptr<GLAUnifiedDevice> _unifiedDevice;
 };

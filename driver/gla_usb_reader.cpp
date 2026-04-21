@@ -1,5 +1,4 @@
 #include "gla_usb_reader.hpp"
-#include "gla_device.hpp"
 #include <CoreAudio/CoreAudio.h>
 #include <syslog.h>
 #include <cstring>
@@ -51,7 +50,6 @@ bool GLAUSBReader::start(const std::string& deviceNameSubstring) {
         return false;
     }
 
-    // Request a small buffer to minimise latency.
     AudioObjectPropertyAddress bufProp = {
         kAudioDevicePropertyBufferFrameSize,
         kAudioDevicePropertyScopeInput,
@@ -86,16 +84,16 @@ void GLAUSBReader::stop() {
     _running = false;
 }
 
-void GLAUSBReader::setChannelDevice(int channelIndex, GLAEntityDevice* device) {
+void GLAUSBReader::setChannelBuffer(int channelIndex, GLARingBuffer* buf) {
     std::lock_guard<std::mutex> lk(_mapMutex);
-    if (channelIndex >= static_cast<int>(_channelDevices.size()))
-        _channelDevices.resize(static_cast<size_t>(channelIndex + 1), nullptr);
-    _channelDevices[static_cast<size_t>(channelIndex)] = device;
+    if (channelIndex >= static_cast<int>(_channelBuffers.size()))
+        _channelBuffers.resize(static_cast<size_t>(channelIndex + 1), nullptr);
+    _channelBuffers[static_cast<size_t>(channelIndex)] = buf;
 }
 
-void GLAUSBReader::clearChannelDevices() {
+void GLAUSBReader::clearChannelBuffers() {
     std::lock_guard<std::mutex> lk(_mapMutex);
-    _channelDevices.clear();
+    _channelBuffers.clear();
 }
 
 OSStatus GLAUSBReader::ioProcStatic(AudioDeviceID /*device*/,
@@ -110,34 +108,28 @@ OSStatus GLAUSBReader::ioProcStatic(AudioDeviceID /*device*/,
 }
 
 OSStatus GLAUSBReader::ioProc(const AudioBufferList* inputData) {
-    // inputData is interleaved or non-interleaved float32 from the USB device.
-    // Lock-free fast path: no mutex on audio thread.
-    // We take a snapshot of the channel map under a try_lock; if we can't get
-    // it we simply skip this callback (avoids priority inversion).
     if (!_mapMutex.try_lock()) return noErr;
-    auto devices = _channelDevices; // snapshot
+    auto buffers = _channelBuffers; // snapshot
     _mapMutex.unlock();
 
-    // USB bridge typically presents non-interleaved buffers (one per channel).
+    int globalCh = 0;
     for (UInt32 buf = 0; buf < inputData->mNumberBuffers; ++buf) {
         const auto& abuf = inputData->mBuffers[buf];
-        int channelCount = static_cast<int>(abuf.mNumberChannels);
+        const int channelCount = static_cast<int>(abuf.mNumberChannels);
         const float* src = static_cast<const float*>(abuf.mData);
-        UInt32 frames = abuf.mDataByteSize / (sizeof(float) * abuf.mNumberChannels);
+        const UInt32 frames = abuf.mDataByteSize / (sizeof(float) * abuf.mNumberChannels);
 
-        for (int ch = 0; ch < channelCount; ++ch) {
-            int globalCh = static_cast<int>(buf) + ch; // adjust for interleaved
-            if (globalCh >= static_cast<int>(devices.size())) continue;
-            GLAEntityDevice* dev = devices[static_cast<size_t>(globalCh)];
-            if (!dev) continue;
+        for (int ch = 0; ch < channelCount; ++ch, ++globalCh) {
+            if (globalCh >= static_cast<int>(buffers.size())) break;
+            GLARingBuffer* ring = buffers[static_cast<size_t>(globalCh)];
+            if (!ring) continue;
 
             if (channelCount == 1) {
-                // Non-interleaved: entire buffer is this channel.
-                dev->ringBuffer().write(src, frames);
+                ring->write(src, frames);
             } else {
-                // Interleaved: stride copy.
                 for (UInt32 f = 0; f < frames; ++f)
-                    dev->ringBuffer().write(src + f * channelCount + ch, 1);
+                    _scratch[f] = src[f * static_cast<UInt32>(channelCount) + static_cast<UInt32>(ch)];
+                ring->write(_scratch, frames);
             }
         }
     }

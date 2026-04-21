@@ -6,7 +6,6 @@
 #include <syslog.h>
 
 // Hardcoded test entries used until the daemon connects and sends a real channel map.
-// These let us verify the HAL driver appears in CoreAudio with named channels.
 static const std::vector<GLAChannelEntry> kTestChannelMap = []() {
     std::vector<GLAChannelEntry> v(2);
     v[0].channel_index = 0;
@@ -27,10 +26,16 @@ GLADriver::GLADriver()
 
 OSStatus GLADriver::Initialize()
 {
-    OSStatus err = aspl::Driver::Initialize();
-    if (err != noErr)
-        return err;
+    syslog(LOG_INFO, "GLA: Initialize() start");
 
+    OSStatus err = aspl::Driver::Initialize();
+    if (err != noErr) {
+        syslog(LOG_ERR, "GLA: aspl::Driver::Initialize() failed: %d", (int)err);
+        return err;
+    }
+
+    syslog(LOG_INFO, "GLA: calling applyChannelMap (test map, %zu entries)",
+           kTestChannelMap.size());
     applyChannelMap(kTestChannelMap);
 
     _ipcClient->start([this](const std::vector<GLAChannelEntry>& entries) {
@@ -47,38 +52,34 @@ GLADriver::~GLADriver() {
 }
 
 void GLADriver::applyChannelMap(const std::vector<GLAChannelEntry>& entries) {
+    syslog(LOG_INFO, "GLA: applyChannelMap(%zu entries)", entries.size());
+
     auto plugin  = GetPlugin();
     auto context = GetContext();
 
-    // Build the next set of devices.
-    std::unordered_map<uint64_t, std::shared_ptr<GLAEntityDevice>> next;
-    for (const auto& e : entries) next[e.entity_id] = nullptr;
-
-    // Remove devices that are no longer in the map.
-    for (auto& [eid, dev] : _devices) {
-        if (next.find(eid) == next.end()) {
-            plugin->RemoveDevice(dev);
-            syslog(LOG_INFO, "GLA: removed device for entity 0x%llx",
-                   (unsigned long long)eid);
-        }
+    if (_unifiedDevice) {
+        syslog(LOG_INFO, "GLA: removing old unified device");
+        plugin->RemoveDevice(_unifiedDevice);
+        _usbReader->clearChannelBuffers(); // before reset() so IOProc never writes to freed rings
+        _unifiedDevice.reset();
     }
 
-    // Add or reuse devices, update USB mapping.
-    _usbReader->clearChannelDevices();
-    for (const auto& e : entries) {
-        std::string name(e.display_name);
-        auto it = _devices.find(e.entity_id);
-        if (it != _devices.end()) {
-            next[e.entity_id] = it->second;
-        } else {
-            auto dev = std::make_shared<GLAEntityDevice>(
-                context, name, e.entity_id, e.channel_index);
-            dev->init();
-            plugin->AddDevice(dev);
-            next[e.entity_id] = dev;
-        }
-        _usbReader->setChannelDevice(e.channel_index, next[e.entity_id].get());
+    if (entries.empty()) {
+        syslog(LOG_INFO, "GLA: empty map, no device created");
+        return;
     }
 
-    _devices = std::move(next);
+    syslog(LOG_INFO, "GLA: creating GLAUnifiedDevice");
+    _unifiedDevice = std::make_shared<GLAUnifiedDevice>(context, entries);
+    syslog(LOG_INFO, "GLA: calling init()");
+    _unifiedDevice->init();
+    syslog(LOG_INFO, "GLA: calling AddDevice");
+    plugin->AddDevice(_unifiedDevice);
+    syslog(LOG_INFO, "GLA: AddDevice done");
+
+    for (const auto& e : entries)
+        _usbReader->setChannelBuffer(e.channel_index,
+                                     _unifiedDevice->getChannelRingBuffer(e.channel_index));
+
+    syslog(LOG_INFO, "GLA: applied channel map (%zu sources)", entries.size());
 }

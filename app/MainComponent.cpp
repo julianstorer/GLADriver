@@ -106,7 +106,7 @@ void MainComponent::paint(juce::Graphics& g) {
     g.fillAll(getLookAndFeel().findColour(juce::ResizableWindow::backgroundColourId));
     g.setColour(juce::Colours::white);
     g.setFont(14.0f);
-    g.drawText("GLA Injector — Patchbay", 10, 10, getWidth() - 20, 24,
+    g.drawText("GLA Injector - Patchbay", 10, 10, getWidth() - 20, 24,
                juce::Justification::centredLeft);
 }
 

@@ -5,27 +5,24 @@
 #include <vector>
 #include <functional>
 #include <mutex>
-
-class GLAEntityDevice;
+#include "../common/gla_ring_buffer.hpp"
 
 // Registers an AudioDeviceIOProc against the USB bridge device.
-// On each callback, demultiplexes channels into per-entity ring buffers.
+// On each callback, demultiplexes channels into per-source ring buffers.
 class GLAUSBReader {
 public:
     GLAUSBReader();
     ~GLAUSBReader();
 
-    // Find the USB bridge device by matching substring of its name.
-    // Returns true if found and started.
     bool start(const std::string& deviceNameSubstring);
     void stop();
 
     bool isRunning() const { return _running; }
     AudioDeviceID deviceID() const { return _deviceID; }
 
-    // Register a channel→device mapping. channelIndex is 0-based.
-    void setChannelDevice(int channelIndex, GLAEntityDevice* device);
-    void clearChannelDevices();
+    // Register a channel→ring buffer mapping. channelIndex is 0-based.
+    void setChannelBuffer(int channelIndex, GLARingBuffer* buf);
+    void clearChannelBuffers();
 
 private:
     static OSStatus ioProcStatic(AudioDeviceID device,
@@ -38,10 +35,11 @@ private:
 
     OSStatus ioProc(const AudioBufferList* inputData);
 
-    AudioDeviceID _deviceID = kAudioDeviceUnknown;
+    AudioDeviceID _deviceID   = kAudioDeviceUnknown;
     AudioDeviceIOProcID _ioProcID = nullptr;
     bool _running = false;
 
     std::mutex _mapMutex;
-    std::vector<GLAEntityDevice*> _channelDevices; // index = USB channel (0-based)
+    std::vector<GLARingBuffer*> _channelBuffers; // index = USB channel (0-based), non-owning
+    float _scratch[4096]; // deinterleave buffer; member avoids RT-thread stack pressure
 };

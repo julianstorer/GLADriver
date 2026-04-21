@@ -1,6 +1,6 @@
 #!/bin/bash
 # Fast dev-cycle script: build driver, sign, install, restart coreaudiod.
-# Usage: ./dev-install.sh [build-dir]
+# Usage: ./dev-driver-install.sh [build-dir]
 # Requires sudo (will prompt once).
 set -e
 
@@ -30,7 +30,7 @@ echo "==> Verifying (waiting up to 15s for driver to appear)..."
 FOUND=0
 for i in $(seq 1 15); do
     sleep 1
-    if system_profiler SPAudioDataType 2>/dev/null | grep -q "GLA Injector\|Bob.*Guitar\|Alice.*Vocal"; then
+    if system_profiler SPAudioDataType 2>/dev/null | grep -q "GreenLight AVB\|GLA Injector"; then
         FOUND=1
         break
     fi
@@ -38,13 +38,15 @@ for i in $(seq 1 15); do
 done
 
 if [ $FOUND -eq 1 ]; then
-    echo "    Driver is visible:"
-    system_profiler SPAudioDataType 2>/dev/null | grep -A4 "GLA Injector\|Bob.*Guitar\|Alice.*Vocal"
+    echo "    Driver is visible: GreenLight AVB found in CoreAudio."
     echo "Done."
 else
     echo "    ERROR: driver did not appear after 15s."
-    echo "    Last coreaudiod errors:"
-    /usr/bin/log show --last 30s --info --process coreaudiod 2>/dev/null \
-        | grep -iE "GLAInjector|gla|error|fail|unable" | tail -10 || true
+    echo "    GLA driver syslog (last 30s):"
+    /usr/bin/log show --last 30s --info --predicate 'process == "coreaudiod"' 2>/dev/null \
+        | grep -iE "GLA|GLAInjector|GreenLight" | tail -20 || true
+    echo "    coreaudiod errors (last 30s):"
+    /usr/bin/log show --last 30s --info --predicate 'process == "coreaudiod"' 2>/dev/null \
+        | grep -iE "error|fail|unable|invalid|crash" | tail -10 || true
     exit 1
 fi
