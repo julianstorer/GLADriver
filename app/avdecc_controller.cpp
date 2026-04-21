@@ -24,9 +24,19 @@ bool AVDECCController::start (const std::string& networkInterface)
             /*executorName=*/std::nullopt,
             /*virtualEntityInterface=*/nullptr);
     }
+    catch (la::avdecc::controller::Controller::Exception const& e)
+    {
+        syslog (LOG_ERR, "GLA: AVDECC controller init failed: %s", e.what());
+        return false;
+    }
     catch (std::exception const& e)
     {
-        syslog (LOG_ERR, "GLA: failed to create AVDECC controller: %s", e.what());
+        syslog (LOG_ERR, "GLA: AVDECC controller init failed: %s", e.what());
+        return false;
+    }
+    catch (...)
+    {
+        syslog (LOG_ERR, "GLA: AVDECC controller init failed (unknown exception)");
         return false;
     }
     controller->registerObserver (this);
