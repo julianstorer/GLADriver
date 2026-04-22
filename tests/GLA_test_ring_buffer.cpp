@@ -1,10 +1,11 @@
-#include "GLARingBuffer.h"
+#include "GLA_RingBuffer.h"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
 #include <thread>
 
-static void testBasicReadWrite() {
+static void testBasicReadWrite()
+{
     GLARingBuffer rb(16);
 
     float in[4] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -18,7 +19,8 @@ static void testBasicReadWrite() {
     printf("testBasicReadWrite: PASS\n");
 }
 
-static void testUnderrun() {
+static void testUnderrun()
+{
     GLARingBuffer rb(16);
 
     float in[4] = {1.0f, 2.0f, 3.0f, 4.0f};
@@ -36,7 +38,8 @@ static void testUnderrun() {
     printf("testUnderrun: PASS\n");
 }
 
-static void testOverrun() {
+static void testOverrun()
+{
     GLARingBuffer rb(8);
 
     float in[6] = {1, 2, 3, 4, 5, 6};
@@ -50,7 +53,8 @@ static void testOverrun() {
     printf("testOverrun: PASS\n");
 }
 
-static void testConcurrent() {
+static void testConcurrent()
+{
     GLARingBuffer rb(4096);
 
     std::thread producer([&]{
@@ -84,7 +88,8 @@ static void testConcurrent() {
     printf("testConcurrent: PASS\n");
 }
 
-int main() {
+int main()
+{
     testBasicReadWrite();
     testUnderrun();
     testOverrun();

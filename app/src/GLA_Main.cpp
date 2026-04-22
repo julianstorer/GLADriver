@@ -1,6 +1,6 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
-#include "MainComponent.h"
+#include "GLA_MainComponent.h"
 
 //==============================================================================
 class GLAApplication : public juce::JUCEApplication

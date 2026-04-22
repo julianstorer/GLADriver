@@ -1,5 +1,5 @@
 add_library(gla_driver MODULE
-    entry_point.cpp)
+    GLA_entry_point.cpp)
 
 set_target_properties(gla_driver PROPERTIES
     BUNDLE TRUE

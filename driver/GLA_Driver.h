@@ -5,10 +5,10 @@
 #include <memory>
 #include <syslog.h>
 #include <vector>
-#include "../common/GLAIPCTypes.h"
-#include "GLAUnifiedDevice.h"
-#include "GLAIPCClient.h"
-#include "GLAUSBReader.h"
+#include "../common/GLA_IPCTypes.h"
+#include "GLA_UnifiedDevice.h"
+#include "GLA_IPCClient.h"
+#include "GLA_USBReader.h"
 
 
 //==============================================================================

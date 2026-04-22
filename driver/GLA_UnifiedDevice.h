@@ -9,8 +9,8 @@
 #include <vector>
 #include <mach/mach_time.h>
 #include <syslog.h>
-#include "../common/GLAIPCTypes.h"
-#include "../common/GLARingBuffer.h"
+#include "../common/GLA_IPCTypes.h"
+#include "../common/GLA_RingBuffer.h"
 
 
 // Single CoreAudio device. All AVB sources appear as channels in one interleaved stream.

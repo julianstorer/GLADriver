@@ -1,9 +1,10 @@
-#include "GLAIPCTypes.h"
+#include "GLA_IPCTypes.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
 
-static void testChannelMapSerialize() {
+static void testChannelMapSerialize()
+{
     std::vector<GLAChannelEntry> entries(2);
     entries[0].channelIndex = 0;
     entries[0].entityId     = 0xDEADBEEF12345678ULL;
@@ -38,7 +39,8 @@ static void testChannelMapSerialize() {
     printf("testChannelMapSerialize: PASS\n");
 }
 
-static void testEntityListSerialize() {
+static void testEntityListSerialize()
+{
     std::vector<GLAEntityInfo> entities(1);
     entities[0].entityId   = 0x1234567890ABCDEFULL;
     entities[0].online      = true;
@@ -63,7 +65,8 @@ static void testEntityListSerialize() {
     printf("testEntityListSerialize: PASS\n");
 }
 
-int main() {
+int main()
+{
     testChannelMapSerialize();
     testEntityListSerialize();
     printf("All IPC protocol tests passed.\n");

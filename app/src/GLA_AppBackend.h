@@ -8,10 +8,10 @@
 #include <cstring>
 #include <syslog.h>
 #include <juce_events/juce_events.h>
-#include "GLAIPCServer.h"
-#include "../../common/GLAIPCTypes.h"
-#include "AVDECCController.h"
-#include "USBBridgeMonitor.h"
+#include "GLA_IPCServer.h"
+#include "../../common/GLA_IPCTypes.h"
+#include "GLA_AVDECCController.h"
+#include "GLA_USBBridgeMonitor.h"
 
 
 //==============================================================================

@@ -6,7 +6,7 @@
 #include <string>
 #include <syslog.h>
 #include <vector>
-#include "../common/GLARingBuffer.h"
+#include "../common/GLA_RingBuffer.h"
 
 struct GLAUSBReader
 {

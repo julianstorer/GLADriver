@@ -5,7 +5,7 @@ juce_add_gui_app(gla_app
     VERSION      "0.1.0")
 
 target_sources(gla_app PRIVATE
-    src/Main.cpp)
+    src/GLA_Main.cpp)
 
 target_include_directories(gla_app PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src
