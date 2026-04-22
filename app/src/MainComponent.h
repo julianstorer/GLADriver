@@ -7,7 +7,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <ifaddrs.h>
 #include <net/if.h>
-#include "../../common/gla_ipc_types.hpp"
+#include "../../common/GLAIPCTypes.h"
 #include "AppBackend.h"
 
 

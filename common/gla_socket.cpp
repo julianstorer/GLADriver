@@ -1,4 +1,4 @@
-#include "gla_socket.hpp"
+#include "GLASocket.h"
 #include <cerrno>
 #include <cstring>
 #include <fcntl.h>

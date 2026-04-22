@@ -12,8 +12,8 @@
 #include <thread>
 #include <unistd.h>
 #include <vector>
-#include "../../common/gla_ipc_types.hpp"
-#include "../../common/gla_socket.hpp"
+#include "../../common/GLAIPCTypes.h"
+#include "../../common/GLASocket.h"
 
 //==============================================================================
 // Single-threaded UNIX socket server that serves:

@@ -1,10 +1,5 @@
 add_library(gla_driver MODULE
-    entry_point.cpp
-    gla_driver.cpp
-    gla_device.cpp
-    gla_io_handler.cpp
-    gla_usb_reader.cpp
-    gla_ipc_client.cpp)
+    entry_point.cpp)
 
 set_target_properties(gla_driver PROPERTIES
     BUNDLE TRUE

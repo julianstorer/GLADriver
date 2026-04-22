@@ -9,7 +9,7 @@
 #include <syslog.h>
 #include <unordered_map>
 #include <vector>
-#include "../../common/gla_ipc_types.hpp"
+#include "../../common/GLAIPCTypes.h"
 
 //==============================================================================
 struct EntityRecord

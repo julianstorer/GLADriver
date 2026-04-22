@@ -1,4 +1,4 @@
-#include "gla_ring_buffer.hpp"
+#include "GLARingBuffer.h"
 #include <cassert>
 #include <cmath>
 #include <cstdio>

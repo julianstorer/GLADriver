@@ -1,0 +1,110 @@
+#pragma once
+#include <aspl/Driver.hpp>
+#include <aspl/Plugin.hpp>
+#include <memory>
+#include <syslog.h>
+#include <vector>
+#include "../common/GLAIPCTypes.h"
+#include "GLAUnifiedDevice.h"
+#include "GLAIPCClient.h"
+#include "GLAUSBReader.h"
+
+//==============================================================================
+class GLADriver : public aspl::Driver
+{
+public:
+    GLADriver()
+        : aspl::Driver(),
+          usbReader (std::make_shared<GLAUSBReader>()),
+          ipcClient (std::make_shared<GLAIPCClient>())
+    {}
+
+    ~GLADriver() override
+    {
+        ipcClient->stop();
+        usbReader->stop();
+    }
+
+protected:
+    OSStatus Initialize() override
+    {
+        syslog (LOG_INFO, "GLA: Initialize() start");
+
+        OSStatus err = aspl::Driver::Initialize();
+
+        if (err != noErr)
+        {
+            syslog (LOG_ERR, "GLA: aspl::Driver::Initialize() failed: %d", (int) err);
+            return err;
+        }
+
+        const auto& map = testChannelMap();
+        syslog (LOG_INFO, "GLA: calling applyChannelMap (test map, %zu entries)", map.size());
+        applyChannelMap (map);
+
+        ipcClient->start ([this] (const std::vector<GLAChannelEntry>& entries)
+        {
+            applyChannelMap (entries);
+        });
+
+        syslog (LOG_INFO, "GLA: driver initialized");
+        return noErr;
+    }
+
+    void applyChannelMap (const std::vector<GLAChannelEntry>& entries)
+    {
+        syslog (LOG_INFO, "GLA: applyChannelMap(%zu entries)", entries.size());
+
+        auto plugin = GetPlugin();
+
+        if (unifiedDevice)
+        {
+            syslog (LOG_INFO, "GLA: removing old unified device");
+            plugin->RemoveDevice (unifiedDevice);
+            usbReader->clearChannelBuffers();
+            unifiedDevice.reset();
+        }
+
+        if (entries.empty())
+        {
+            syslog (LOG_INFO, "GLA: empty map, no device created");
+            return;
+        }
+
+        syslog (LOG_INFO, "GLA: creating GLAUnifiedDevice");
+        unifiedDevice = std::make_shared<GLAUnifiedDevice> (GetContext(), entries);
+        syslog (LOG_INFO, "GLA: calling init()");
+        unifiedDevice->init();
+        syslog (LOG_INFO, "GLA: calling AddDevice");
+        plugin->AddDevice (unifiedDevice);
+        syslog (LOG_INFO, "GLA: AddDevice done");
+
+        for (const auto& e : entries)
+            usbReader->setChannelBuffer (e.channelIndex,
+                                         unifiedDevice->getChannelRingBuffer (e.channelIndex));
+
+        syslog (LOG_INFO, "GLA: applied channel map (%zu sources)", entries.size());
+    }
+
+private:
+    static const std::vector<GLAChannelEntry>& testChannelMap()
+    {
+        static const std::vector<GLAChannelEntry> map = []()
+        {
+            std::vector<GLAChannelEntry> v (2);
+            v[0].channelIndex = 0;
+            v[0].entityId     = 0x0000000000000001ULL;
+            snprintf (v[0].displayName, sizeof (v[0].displayName), "Bob's Guitar");
+            v[1].channelIndex = 1;
+            v[1].entityId     = 0x0000000000000002ULL;
+            snprintf (v[1].displayName, sizeof (v[1].displayName), "Alice's Vocals");
+            return v;
+        }();
+
+        return map;
+    }
+
+    std::shared_ptr<GLAUSBReader> usbReader;
+    std::shared_ptr<GLAIPCClient> ipcClient;
+    std::shared_ptr<GLAUnifiedDevice> unifiedDevice;
+};

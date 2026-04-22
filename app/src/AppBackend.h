@@ -9,7 +9,7 @@
 #include <syslog.h>
 #include <juce_events/juce_events.h>
 #include "GLAIPCServer.h"
-#include "../../common/gla_ipc_types.hpp"
+#include "../../common/GLAIPCTypes.h"
 #include "AVDECCController.h"
 #include "USBBridgeMonitor.h"
 

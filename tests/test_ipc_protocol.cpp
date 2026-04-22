@@ -1,4 +1,4 @@
-#include "gla_ipc_types.hpp"
+#include "GLAIPCTypes.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>

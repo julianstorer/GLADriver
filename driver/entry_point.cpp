@@ -1,4 +1,4 @@
-#include "gla_driver.hpp"
+#include "GLADriver.h"
 #include <CoreAudio/AudioServerPlugIn.h>
 #include <CoreFoundation/CoreFoundation.h>
 
