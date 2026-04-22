@@ -34,6 +34,10 @@ struct GLAUSBReader
         UInt32 frameSize = 128;
         AudioObjectSetPropertyData (deviceId, &bufProp, 0, nullptr, sizeof (frameSize), &frameSize);
 
+        UInt32 sz = sizeof (frameSize);
+        AudioObjectGetPropertyData (deviceId, &bufProp, 0, nullptr, &sz, &frameSize);
+        scratch.resize (frameSize);
+
         OSStatus err = AudioDeviceCreateIOProcID (deviceId, ioProcStatic, this, &ioProcId);
 
         if (err != noErr)
@@ -166,13 +170,8 @@ private:
         return kAudioDeviceUnknown;
     }
 
-    static OSStatus ioProcStatic (AudioDeviceID /*device*/,
-                                  const AudioTimeStamp* /*nowTime*/,
-                                  const AudioBufferList* inputData,
-                                  const AudioTimeStamp* /*inputTime*/,
-                                  AudioBufferList* /*outputData*/,
-                                  const AudioTimeStamp* /*outputTime*/,
-                                  void* clientData)
+    static OSStatus ioProcStatic (AudioDeviceID, const AudioTimeStamp*, const AudioBufferList* inputData,
+                                  const AudioTimeStamp*, AudioBufferList*, const AudioTimeStamp*, void* clientData)
     {
         return static_cast<GLAUSBReader*> (clientData)->ioProc (inputData);
     }
@@ -210,10 +209,13 @@ private:
                 }
                 else
                 {
+                    if (frames > scratch.size())
+                        continue;
+
                     for (UInt32 f = 0; f < frames; ++f)
                         scratch[f] = src[f * static_cast<UInt32> (channelCount) + static_cast<UInt32> (ch)];
 
-                    ring->write (scratch, frames);
+                    ring->write (scratch.data(), frames);
                 }
             }
         }
@@ -227,5 +229,5 @@ private:
 
     std::mutex mapMutex;
     std::vector<GLARingBuffer*> channelBuffers;
-    float scratch[4096];
+    std::vector<float> scratch;
 };

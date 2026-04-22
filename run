@@ -1,0 +1,45 @@
+#!/bin/bash
+# run - Execute scripts from the scripts/ folder
+# Usage: ./run <script_name> [args...]
+# Example: ./run build-driver
+#          ./run dev-run-app Release
+
+cd "$(dirname "$0")"
+
+CYAN='\033[0;36m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+list_scripts() {
+    echo -e "${CYAN}Available scripts:${NC}"
+    echo ""
+    for script in scripts/*.sh; do
+        [ -f "$script" ] || continue
+        name=$(basename "$script" .sh)
+        desc=$(grep -m1 '^# [^!]' "$script" | sed 's/^# //')
+        printf "  ${GREEN}%-30s${NC} %s\n" "$name" "$desc"
+    done
+    echo ""
+}
+
+if [ -z "$1" ]; then
+    echo "Usage: ./run <script_name> [args...]"
+    echo ""
+    list_scripts
+    exit 1
+fi
+
+SCRIPT_NAME="$1"
+shift
+
+SCRIPT="scripts/$SCRIPT_NAME.sh"
+
+if [ ! -f "$SCRIPT" ]; then
+    echo -e "${YELLOW}Script not found: $SCRIPT_NAME${NC}"
+    echo ""
+    list_scripts
+    exit 1
+fi
+
+exec "$SCRIPT" "$@"

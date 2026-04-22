@@ -1,5 +1,6 @@
 #!/bin/bash
 # Remove the GLA HAL driver and restart coreaudiod.
+# Usage: ./run uninstall-driver
 # Does not touch the app or any other installation.
 set -e
 
