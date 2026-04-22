@@ -10,15 +10,15 @@ static constexpr uint32_t glaIpcMagic = 0x474C4100; // 'GLA\0'
 
 enum class GLAMsgType : uint32_t
 {
-    // Daemon -> Driver
+    // App -> clients (broadcast)
     ChannelMapUpdate    = 1,
-    // App -> Daemon
+    // clients -> App
     GetStatus           = 10,
     GetEntityList       = 11,
     SetRouting          = 12,
     SetNetworkInterface = 13,
     SetUSBBridge        = 14,
-    // Daemon -> App
+    // App -> clients
     StatusResponse      = 20,
     EntityListResponse  = 21,
     RoutingChanged      = 22,

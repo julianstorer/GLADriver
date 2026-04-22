@@ -5,7 +5,7 @@
 #include <aspl/Plugin.hpp>
 #include <syslog.h>
 
-// Hardcoded test entries used until the daemon connects and sends a real channel map.
+// Hardcoded test entries used until the app connects and sends a real channel map.
 static const std::vector<GLAChannelEntry> testChannelMap = []()
 {
     std::vector<GLAChannelEntry> v (2);

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Remove the GLA HAL driver and restart coreaudiod.
-# Does not touch the daemon or any other installation.
+# Does not touch the app or any other installation.
 set -e
 
 HAL_DIR="/Library/Audio/Plug-Ins/HAL"

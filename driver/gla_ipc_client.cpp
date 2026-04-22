@@ -39,12 +39,12 @@ void GLAIPCClient::runLoop()
                 continue;
             }
             backoff = 1;
-            syslog (LOG_INFO, "GLA: connected to daemon");
+            syslog (LOG_INFO, "GLA: connected to app");
         }
         std::vector<uint8_t> msg;
         if (!glaRecvMessage (fd, msg))
         {
-            syslog (LOG_WARNING, "GLA: lost connection to daemon");
+            syslog (LOG_WARNING, "GLA: lost connection to app");
             close (fd);
             fd = -1;
             continue;

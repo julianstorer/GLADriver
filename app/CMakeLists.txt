@@ -5,14 +5,9 @@ juce_add_gui_app(gla_app
     VERSION      "0.1.0")
 
 target_sources(gla_app PRIVATE
-    Main.cpp
-    MainComponent.cpp
-    AppBackend.cpp
-    avdecc_controller.cpp
-    usb_bridge_monitor.cpp
-    gla_ipc_server.cpp)
+    src/Main.cpp)
 
-target_include_directories(gla_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(gla_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
 
 target_compile_definitions(gla_app PRIVATE
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:gla_app,JUCE_PRODUCT_NAME>"
