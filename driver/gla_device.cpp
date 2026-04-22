@@ -77,6 +77,7 @@ OSStatus GLAUnifiedDevice::GetZeroTimeStampImpl (UInt32 /*clientID*/,
     // Anchor to actual current time on first call so the HAL never has to
     // "catch up" from epoch 0 (which causes a tight spin of thousands of cycles).
     UInt64 anchor = anchorHostTime.load (std::memory_order_relaxed);
+
     if (anchor == 0)
     {
         anchor = mach_absolute_time();

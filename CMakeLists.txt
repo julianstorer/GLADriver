@@ -8,6 +8,8 @@ set(CMAKE_OSX_DEPLOYMENT_TARGET "15.0" CACHE STRING "" FORCE)
 
 # libASPL
 add_subdirectory(third_party/libASPL)
+get_target_property(_aspl_includes libASPL INTERFACE_INCLUDE_DIRECTORIES)
+set_target_properties(libASPL PROPERTIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES "${_aspl_includes}")
 
 # L-Acoustics avdecc
 set(BUILD_AVDECC_CONTROLLER ON CACHE BOOL "" FORCE)

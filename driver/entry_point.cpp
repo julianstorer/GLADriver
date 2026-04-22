@@ -12,7 +12,9 @@ void* GLAInjector_Create (CFAllocatorRef /*allocator*/, CFUUIDRef requestedTypeU
 {
     if (!CFEqual (requestedTypeUUID, kAudioServerPlugInTypeUUID))
         return nullptr;
-    if (!gDriver)
+
+    if (gDriver == nullptr)
         gDriver = new GLADriver();
+
     return gDriver->GetReference();
 }
