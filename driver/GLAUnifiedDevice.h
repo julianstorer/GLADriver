@@ -1,4 +1,5 @@
 #pragma once
+
 #include <aspl/Device.hpp>
 #include <aspl/IORequestHandler.hpp>
 #include <aspl/Stream.hpp>
@@ -10,16 +11,15 @@
 #include <syslog.h>
 #include "../common/GLAIPCTypes.h"
 #include "../common/GLARingBuffer.h"
-#include "GLAUnifiedIOHandler.h"
+
 
 // Single CoreAudio device. All AVB sources appear as channels in one interleaved stream.
-class GLAUnifiedDevice : public aspl::Device
+struct GLAUnifiedDevice  : public aspl::Device
 {
-public:
     GLAUnifiedDevice (std::shared_ptr<const aspl::Context> context,
                       const std::vector<GLAChannelEntry>& channelEntries)
-        : aspl::Device (context, makeParams_ (channelEntries.size()))
-        , entries (channelEntries)
+        : aspl::Device (context, makeParams_ (channelEntries.size())),
+          entries (channelEntries)
     {
         for (size_t i = 0; i < channelEntries.size(); ++i)
         {
@@ -57,10 +57,11 @@ public:
         sp.Format.mBytesPerPacket   = 4 * nChannels;
         AddStreamAsync (sp);
 
-        auto handler = std::make_shared<GLAUnifiedIOHandler> (nChannels, &rings);
+        auto handler = std::make_shared<UnifiedIOHandler> (nChannels, &rings);
         SetIOHandler (handler);
     }
 
+    //==============================================================================
     GLARingBuffer* getChannelRingBuffer (int channelIndex)
     {
         auto it = channelToSlot.find (channelIndex);
@@ -70,9 +71,12 @@ public:
 
     std::vector<std::unique_ptr<GLARingBuffer>>& ringBuffers() { return rings; }
 
-    static constexpr UInt32 zeroTsPeriod = 512;
+    static constexpr UInt32 sampleRate_   = 48000;
+    static constexpr size_t ringCapacity_ = 4096;
+    static constexpr UInt32 zeroTsPeriod  = 512;
 
 protected:
+    //==============================================================================
     OSStatus GetZeroTimeStampImpl (UInt32 /*clientID*/,
                                    Float64* outSampleTime,
                                    UInt64*  outHostTime,
@@ -101,9 +105,7 @@ protected:
     }
 
 private:
-    static constexpr UInt32 sampleRate_   = 48000;
-    static constexpr size_t ringCapacity_ = 4096;
-
+    //==============================================================================
     static aspl::DeviceParameters makeParams_ (size_t channelCount)
     {
         aspl::DeviceParameters p;
@@ -119,11 +121,53 @@ private:
         return p;
     }
 
-    std::vector<GLAChannelEntry>                 entries;
-    std::unordered_map<int, size_t>              channelToSlot;
-    std::vector<std::unique_ptr<GLARingBuffer>>  rings;
+    //==============================================================================
+    struct UnifiedIOHandler   : public aspl::IORequestHandler
+    {
+        UnifiedIOHandler (UInt32 n, std::vector<std::unique_ptr<GLARingBuffer>>* r)
+            : numChannels (n), rings (r)
+        {}
+
+        void OnReadClientInput (const std::shared_ptr<aspl::Client>& /*client*/,
+                                const std::shared_ptr<aspl::Stream>& /*stream*/,
+                                Float64 /*zeroTimestamp*/,
+                                Float64 /*timestamp*/,
+                                void* bytes,
+                                UInt32 bytesCount) override
+        {
+            if (numChannels == 0 || !rings)
+            {
+                std::memset (bytes, 0, bytesCount);
+                return;
+            }
+
+            const UInt32 frames = bytesCount / (sizeof (float) * numChannels);
+            auto out = static_cast<float*> (bytes);
+
+            for (UInt32 ch = 0; ch < numChannels; ++ch)
+            {
+                if (ch >= rings->size() || !(*rings)[ch])
+                    continue;
+
+                (*rings)[ch]->read (scratch, frames);
+
+                for (UInt32 f = 0; f < frames; ++f)
+                    out[f * numChannels + ch] = scratch[f];
+            }
+        }
+
+    private:
+        UInt32 numChannels;
+        std::vector<std::unique_ptr<GLARingBuffer>>* rings;
+        float scratch[4096];
+    };
+
+    //==============================================================================
+    std::vector<GLAChannelEntry> entries;
+    std::unordered_map<int, size_t> channelToSlot;
+    std::vector<std::unique_ptr<GLARingBuffer>> rings;
 
     std::atomic<UInt64> anchorHostTime { 0 };
     std::atomic<UInt64> periodCounter  { 0 };
-    double              hostTicksPerFrame { 0.0 };
+    double hostTicksPerFrame = 0;
 };

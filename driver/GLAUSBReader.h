@@ -20,8 +20,7 @@ struct GLAUSBReader
 
         if (deviceId == kAudioDeviceUnknown)
         {
-            syslog (LOG_WARNING, "GLA: USB bridge device '%s' not found",
-                    deviceNameSubstring.c_str());
+            syslog (LOG_WARNING, "GLA: USB bridge device '%s' not found", deviceNameSubstring.c_str());
             return false;
         }
 

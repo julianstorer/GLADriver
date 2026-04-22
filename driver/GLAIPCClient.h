@@ -1,4 +1,5 @@
 #pragma once
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -10,9 +11,9 @@
 #include "../common/GLAIPCTypes.h"
 #include "../common/GLASocket.h"
 
-class GLAIPCClient
+
+struct GLAIPCClient
 {
-public:
     GLAIPCClient() = default;
     ~GLAIPCClient()  { stop(); }
 
@@ -40,6 +41,13 @@ public:
     }
 
 private:
+    //==============================================================================
+    int fd = -1;
+    std::atomic<bool> running { false };
+    std::thread thread;
+    ChannelMapCallback callback;
+
+    //==============================================================================
     void runLoop()
     {
         int backoff = 1;
@@ -101,9 +109,4 @@ private:
         if (callback)
             callback (entries);
     }
-
-    int fd = -1;
-    std::atomic<bool> running { false };
-    std::thread thread;
-    ChannelMapCallback callback;
 };

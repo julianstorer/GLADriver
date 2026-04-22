@@ -1,4 +1,5 @@
 #pragma once
+
 #include <aspl/Driver.hpp>
 #include <aspl/Plugin.hpp>
 #include <memory>
@@ -9,14 +10,13 @@
 #include "GLAIPCClient.h"
 #include "GLAUSBReader.h"
 
+
 //==============================================================================
-class GLADriver : public aspl::Driver
+struct GLADriver  : public aspl::Driver
 {
-public:
-    GLADriver()
-        : aspl::Driver(),
-          usbReader (std::make_shared<GLAUSBReader>()),
-          ipcClient (std::make_shared<GLAIPCClient>())
+    GLADriver() : aspl::Driver(),
+                  usbReader (std::make_shared<GLAUSBReader>()),
+                  ipcClient (std::make_shared<GLAIPCClient>())
     {}
 
     ~GLADriver() override
@@ -25,7 +25,6 @@ public:
         usbReader->stop();
     }
 
-protected:
     OSStatus Initialize() override
     {
         syslog (LOG_INFO, "GLA: Initialize() start");
@@ -87,6 +86,7 @@ protected:
     }
 
 private:
+    //==============================================================================
     static const std::vector<GLAChannelEntry>& testChannelMap()
     {
         static const std::vector<GLAChannelEntry> map = []()
