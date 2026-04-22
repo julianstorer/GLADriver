@@ -11,7 +11,6 @@ set_target_properties(gla_driver PROPERTIES
 target_include_directories(gla_driver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(gla_driver PRIVATE
     libASPL
-    gla_common
     "-framework CoreAudio"
     "-framework CoreFoundation"
     "-framework AudioToolbox")

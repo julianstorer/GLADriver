@@ -41,13 +41,25 @@ struct GLADriver  : public aspl::Driver
         syslog (LOG_INFO, "GLA: calling applyChannelMap (test map, %zu entries)", map.size());
         applyChannelMap (map);
 
-        ipcClient->start ([this] (const std::vector<GLAChannelEntry>& entries)
-        {
-            applyChannelMap (entries);
-        });
+        ipcClient->start (
+            [this] (const std::vector<GLAChannelEntry>& entries) { applyChannelMap (entries); },
+            [this] (const std::string& uid)                      { applyUSBBridge (uid); }
+        );
 
         syslog (LOG_INFO, "GLA: driver initialized");
         return noErr;
+    }
+
+    void applyUSBBridge (const std::string& uid)
+    {
+        syslog (LOG_INFO, "GLA: applyUSBBridge('%s')", uid.c_str());
+        currentBridgeUID = uid;
+
+        if (unifiedDevice)
+        {
+            usbReader->stop();
+            usbReader->start (currentBridgeUID);
+        }
     }
 
     void applyChannelMap (const std::vector<GLAChannelEntry>& entries)
@@ -59,6 +71,7 @@ struct GLADriver  : public aspl::Driver
         if (unifiedDevice)
         {
             syslog (LOG_INFO, "GLA: removing old unified device");
+            usbReader->stop();
             plugin->RemoveDevice (unifiedDevice);
             usbReader->clearChannelBuffers();
             unifiedDevice.reset();
@@ -82,6 +95,12 @@ struct GLADriver  : public aspl::Driver
             usbReader->setChannelBuffer (e.channelIndex,
                                          unifiedDevice->getChannelRingBuffer (e.channelIndex));
 
+        if (! currentBridgeUID.empty())
+        {
+            syslog (LOG_INFO, "GLA: starting USB reader for '%s'", currentBridgeUID.c_str());
+            usbReader->start (currentBridgeUID);
+        }
+
         syslog (LOG_INFO, "GLA: applied channel map (%zu sources)", entries.size());
     }
 
@@ -104,6 +123,7 @@ private:
         return map;
     }
 
+    std::string currentBridgeUID;
     std::shared_ptr<GLAUSBReader> usbReader;
     std::shared_ptr<GLAIPCClient> ipcClient;
     std::shared_ptr<GLAUnifiedDevice> unifiedDevice;

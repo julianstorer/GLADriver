@@ -7,14 +7,15 @@ juce_add_gui_app(gla_app
 target_sources(gla_app PRIVATE
     src/Main.cpp)
 
-target_include_directories(gla_app PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(gla_app PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_SOURCE_DIR}/common)
 
 target_compile_definitions(gla_app PRIVATE
     JUCE_APPLICATION_NAME_STRING="$<TARGET_PROPERTY:gla_app,JUCE_PRODUCT_NAME>"
     JUCE_APPLICATION_VERSION_STRING="$<TARGET_PROPERTY:gla_app,JUCE_VERSION>")
 
 target_link_libraries(gla_app PRIVATE
-    gla_common
     la_avdecc_controller_static
     juce::juce_gui_basics
     juce::juce_events

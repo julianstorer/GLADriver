@@ -64,3 +64,14 @@ inline std::vector<uint8_t> serializeEntityList (const std::vector<GLAEntityInfo
     memcpy (buf.data() + 8, entities.data(), count * sizeof (GLAEntityInfo));
     return buf;
 }
+
+inline std::vector<uint8_t> serializeUSBBridge (const std::string& uid)
+{
+    uint32_t type = static_cast<uint32_t> (GLAMsgType::SetUSBBridge);
+    uint32_t len  = static_cast<uint32_t> (uid.size());
+    std::vector<uint8_t> buf (8 + len);
+    memcpy (buf.data(),     &type, 4);
+    memcpy (buf.data() + 4, &len,  4);
+    memcpy (buf.data() + 8, uid.data(), len);
+    return buf;
+}

@@ -34,7 +34,6 @@ FetchContent_MakeAvailable(JUCE)
 
 enable_testing()
 
-add_subdirectory(common)
 add_subdirectory(driver)
 add_subdirectory(app)
 add_subdirectory(tests)

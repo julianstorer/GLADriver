@@ -18,10 +18,12 @@ struct GLAIPCClient
     ~GLAIPCClient()  { stop(); }
 
     using ChannelMapCallback = std::function<void(const std::vector<GLAChannelEntry>&)>;
+    using BridgeCallback     = std::function<void(const std::string&)>;
 
-    void start (ChannelMapCallback cb)
+    void start (ChannelMapCallback mapCb, BridgeCallback bridgeCb = {})
     {
-        callback = std::move (cb);
+        callback       = std::move (mapCb);
+        bridgeCallback = std::move (bridgeCb);
         running = true;
         thread = std::thread ([this] { runLoop(); });
     }
@@ -46,6 +48,7 @@ private:
     std::atomic<bool> running { false };
     std::thread thread;
     ChannelMapCallback callback;
+    BridgeCallback bridgeCallback;
 
     //==============================================================================
     void runLoop()
@@ -92,21 +95,36 @@ private:
         if (msg.size() < 8)
             return;
 
-        uint32_t type  = 0;
-        uint32_t count = 0;
-        memcpy (&type,  msg.data(),     4);
-        memcpy (&count, msg.data() + 4, 4);
+        uint32_t type = 0;
+        memcpy (&type, msg.data(), 4);
+        const auto msgType = static_cast<GLAMsgType> (type);
 
-        if (static_cast<GLAMsgType> (type) != GLAMsgType::ChannelMapUpdate)
-            return;
+        if (msgType == GLAMsgType::ChannelMapUpdate)
+        {
+            uint32_t count = 0;
+            memcpy (&count, msg.data() + 4, 4);
 
-        if (msg.size() < 8 + count * sizeof (GLAChannelEntry))
-            return;
+            if (msg.size() < 8 + count * sizeof (GLAChannelEntry))
+                return;
 
-        std::vector<GLAChannelEntry> entries (count);
-        memcpy (entries.data(), msg.data() + 8, count * sizeof (GLAChannelEntry));
+            std::vector<GLAChannelEntry> entries (count);
+            memcpy (entries.data(), msg.data() + 8, count * sizeof (GLAChannelEntry));
 
-        if (callback)
-            callback (entries);
+            if (callback)
+                callback (entries);
+        }
+        else if (msgType == GLAMsgType::SetUSBBridge)
+        {
+            uint32_t len = 0;
+            memcpy (&len, msg.data() + 4, 4);
+
+            if (msg.size() < 8 + len)
+                return;
+
+            std::string uid (reinterpret_cast<const char*> (msg.data() + 8), len);
+
+            if (bridgeCallback)
+                bridgeCallback (uid);
+        }
     }
 };

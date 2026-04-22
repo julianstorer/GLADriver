@@ -5,21 +5,25 @@
 
 // Single-producer single-consumer lock-free ring buffer for float32 audio frames.
 // capacity must be a power of two.
-class GLARingBuffer
+struct GLARingBuffer
 {
-public:
     explicit GLARingBuffer (size_t capacity)
-        : buf (capacity, 0.0f), mask (capacity - 1), head (0), tail (0) {}
+        : buf (capacity, 0.0f), mask (capacity - 1), head (0), tail (0)
+    {}
 
     // Called from producer (USB IOProc thread). Returns frames written.
     size_t write (const float* src, size_t frames)
     {
-        size_t h = head.load (std::memory_order_relaxed);
-        size_t t = tail.load (std::memory_order_acquire);
-        size_t avail = buf.size() - (h - t);
-        if (frames > avail) frames = avail;
+        auto h = head.load (std::memory_order_relaxed);
+        auto t = tail.load (std::memory_order_acquire);
+        auto avail = buf.size() - (h - t);
+
+        if (frames > avail)
+            frames = avail;
+
         for (size_t i = 0; i < frames; ++i)
             buf[(h + i) & mask] = src[i];
+
         head.store (h + frames, std::memory_order_release);
         return frames;
     }
@@ -27,14 +31,17 @@ public:
     // Called from consumer (HAL RT thread). Fills dst with frames, zero-fills remainder.
     void read (float* dst, size_t frames)
     {
-        size_t t = tail.load (std::memory_order_relaxed);
-        size_t h = head.load (std::memory_order_acquire);
-        size_t avail  = h - t;
-        size_t toRead = (avail < frames) ? avail : frames;
+        auto t = tail.load (std::memory_order_relaxed);
+        auto h = head.load (std::memory_order_acquire);
+        auto avail  = h - t;
+        auto toRead = (avail < frames) ? avail : frames;
+
         for (size_t i = 0; i < toRead; ++i)
             dst[i] = buf[(t + i) & mask];
+
         if (toRead < frames)
             std::memset (dst + toRead, 0, (frames - toRead) * sizeof (float));
+
         tail.store (t + toRead, std::memory_order_release);
     }
 

@@ -105,6 +105,24 @@ public:
         }
     }
 
+    void broadcastUSBBridge (const std::string& uid)
+    {
+        auto payload = serializeUSBBridge (uid);
+        std::lock_guard<std::mutex> lk (clientsMutex);
+        currentBridgeUID = uid;
+        std::vector<int> dead;
+
+        for (int fd : clients)
+            if (! glaSendMessage (fd, payload))
+                dead.push_back (fd);
+
+        for (int fd : dead)
+        {
+            close (fd);
+            clients.erase (std::remove (clients.begin(), clients.end(), fd), clients.end());
+        }
+    }
+
 private:
     //==============================================================================
     void runLoop()
@@ -141,6 +159,9 @@ private:
                     std::lock_guard<std::mutex> lk (clientsMutex);
                     clients.push_back (clientFd);
                     syslog (LOG_INFO, "GLA: client connected (fd %d)", clientFd);
+
+                    if (! currentBridgeUID.empty())
+                        glaSendMessage (clientFd, serializeUSBBridge (currentBridgeUID));
                 }
             }
 
@@ -225,6 +246,7 @@ private:
     std::thread thread;
     std::mutex clientsMutex;
     std::vector<int> clients;
+    std::string currentBridgeUID; // guarded by clientsMutex
 
     SetRoutingCallback onSetRouting;
     SetNetifCallback   onSetNetif;

@@ -74,8 +74,11 @@ public:
 
         ipc.setSetBridgeCallback ([this] (const std::string& uid)
         {
-            std::lock_guard<std::mutex> lk (mutex);
-            usbBridgeUID = uid;
+            {
+                std::lock_guard<std::mutex> lk (mutex);
+                usbBridgeUID = uid;
+            }
+            ipc.broadcastUSBBridge (uid);
         });
 
         avdecc.setOnChangeCallback ([this]()
@@ -153,8 +156,11 @@ public:
 
     void setUSBBridge (const std::string& uid)
     {
-        std::lock_guard<std::mutex> lk (mutex);
-        usbBridgeUID = uid;
+        {
+            std::lock_guard<std::mutex> lk (mutex);
+            usbBridgeUID = uid;
+        }
+        ipc.broadcastUSBBridge (uid);
     }
 
     // Callbacks are delivered on the JUCE message thread.
