@@ -75,6 +75,7 @@ public:
     {
         auto payload = serializeChannelMapUpdate (entries);
         std::lock_guard<std::mutex> lk (clientsMutex);
+        currentChannelMapMsg = payload;
         std::vector<int> dead;
 
         for (int fd : clients)
@@ -162,6 +163,9 @@ private:
 
                     if (! currentBridgeUID.empty())
                         glaSendMessage (clientFd, serializeUSBBridge (currentBridgeUID));
+
+                    if (! currentChannelMapMsg.empty())
+                        glaSendMessage (clientFd, currentChannelMapMsg);
                 }
             }
 
@@ -246,7 +250,8 @@ private:
     std::thread thread;
     std::mutex clientsMutex;
     std::vector<int> clients;
-    std::string currentBridgeUID; // guarded by clientsMutex
+    std::string currentBridgeUID;           // guarded by clientsMutex
+    std::vector<uint8_t> currentChannelMapMsg; // guarded by clientsMutex
 
     SetRoutingCallback onSetRouting;
     SetNetifCallback   onSetNetif;

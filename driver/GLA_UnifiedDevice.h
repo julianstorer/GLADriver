@@ -62,6 +62,65 @@ struct GLAUnifiedDevice  : public aspl::Device
     }
 
     //==============================================================================
+    Boolean HasProperty (AudioObjectID objectID,
+                         pid_t clientPID,
+                         const AudioObjectPropertyAddress* address) const override
+    {
+        if (address
+            && address->mSelector == kAudioObjectPropertyElementName
+            && address->mElement >= 1
+            && address->mElement <= static_cast<UInt32> (entries.size()))
+            return true;
+        return aspl::Device::HasProperty (objectID, clientPID, address);
+    }
+
+    OSStatus GetPropertyDataSize (AudioObjectID objectID,
+                                  pid_t clientPID,
+                                  const AudioObjectPropertyAddress* address,
+                                  UInt32 qualifierDataSize,
+                                  const void* qualifierData,
+                                  UInt32* outDataSize) const override
+    {
+        if (address
+            && address->mSelector == kAudioObjectPropertyElementName
+            && address->mElement >= 1
+            && address->mElement <= static_cast<UInt32> (entries.size()))
+        {
+            *outDataSize = sizeof (CFStringRef);
+            return kAudioHardwareNoError;
+        }
+        return aspl::Device::GetPropertyDataSize (
+            objectID, clientPID, address, qualifierDataSize, qualifierData, outDataSize);
+    }
+
+    OSStatus GetPropertyData (AudioObjectID objectID,
+                              pid_t clientPID,
+                              const AudioObjectPropertyAddress* address,
+                              UInt32 qualifierDataSize,
+                              const void* qualifierData,
+                              UInt32 inDataSize,
+                              UInt32* outDataSize,
+                              void* outData) const override
+    {
+        if (address
+            && address->mSelector == kAudioObjectPropertyElementName
+            && address->mElement >= 1
+            && address->mElement <= static_cast<UInt32> (entries.size())
+            && inDataSize >= sizeof (CFStringRef))
+        {
+            const auto& entry = entries[address->mElement - 1];
+            CFStringRef name = CFStringCreateWithCString (
+                kCFAllocatorDefault, entry.displayName, kCFStringEncodingUTF8);
+            memcpy (outData, &name, sizeof (CFStringRef));
+            *outDataSize = sizeof (CFStringRef);
+            return kAudioHardwareNoError;
+        }
+        return aspl::Device::GetPropertyData (
+            objectID, clientPID, address, qualifierDataSize, qualifierData,
+            inDataSize, outDataSize, outData);
+    }
+
+    //==============================================================================
     GLARingBuffer* getChannelRingBuffer (int channelIndex)
     {
         auto it = channelToSlot.find (channelIndex);
