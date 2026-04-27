@@ -37,11 +37,12 @@ echo "    Installed to $DRIVER_DST"
 sudo killall coreaudiod
 echo "    coreaudiod restarted (launchd will respawn it)"
 
-echo "==> Verifying (waiting up to 15s for driver to appear)..."
+echo "==> Verifying (waiting up to 15s for driver to initialise)..."
 FOUND=0
 for i in $(seq 1 15); do
     sleep 1
-    if system_profiler SPAudioDataType 2>/dev/null | grep -q "GreenLight AVB\|GLA Injector"; then
+    if /usr/bin/log show --last "${i}s" --info --predicate 'eventMessage CONTAINS "GLA: driver initialized"' 2>/dev/null \
+            | grep -q "GLA: driver initialized"; then
         FOUND=1
         break
     fi
@@ -49,13 +50,13 @@ for i in $(seq 1 15); do
 done
 
 if [ $FOUND -eq 1 ]; then
-    echo "    Driver is visible: GreenLight AVB found in CoreAudio."
+    echo "    Driver initialised successfully (no audio devices until app connects)."
     echo "Done."
 else
-    echo "    ERROR: driver did not appear after 15s."
+    echo "    ERROR: driver did not initialise after 15s."
     echo "    GLA driver syslog (last 30s):"
-    /usr/bin/log show --last 30s --info --predicate 'process == "coreaudiod"' 2>/dev/null \
-        | grep -iE "GLA|GLAInjector|GreenLight" | tail -20 || true
+    /usr/bin/log show --last 30s --info --predicate 'eventMessage CONTAINS "GLA:"' 2>/dev/null \
+        | tail -20 || true
     echo "    coreaudiod errors (last 30s):"
     /usr/bin/log show --last 30s --info --predicate 'process == "coreaudiod"' 2>/dev/null \
         | grep -iE "error|fail|unable|invalid|crash" | tail -10 || true

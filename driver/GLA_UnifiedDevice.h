@@ -4,6 +4,8 @@
 #include <aspl/IORequestHandler.hpp>
 #include <aspl/Stream.hpp>
 #include <atomic>
+#include <dispatch/dispatch.h>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -19,12 +21,19 @@ struct GLAUnifiedDevice  : public aspl::Device
     GLAUnifiedDevice (std::shared_ptr<const aspl::Context> context,
                       const std::vector<GLAChannelEntry>& channelEntries)
         : aspl::Device (context, makeParams_ (channelEntries.size())),
-          entries (channelEntries)
+          entries (channelEntries),
+          rings (std::make_shared<RingVec>())
     {
+        // Compute timing here (not in init()) so GetZeroTimeStampImpl is valid
+        // from construction, even for stub devices that never call init().
+        struct mach_timebase_info tb;
+        mach_timebase_info (&tb);
+        hostTicksPerFrame = (double (tb.denom) / double (tb.numer)) * 1e9 / sampleRate_;
+
         for (size_t i = 0; i < channelEntries.size(); ++i)
         {
             channelToSlot[channelEntries[i].channelIndex] = i;
-            rings.push_back (std::make_unique<GLARingBuffer> (ringCapacity_));
+            rings->push_back (std::make_unique<GLARingBuffer> (ringCapacity_));
         }
     }
 
@@ -33,32 +42,63 @@ struct GLAUnifiedDevice  : public aspl::Device
         syslog (LOG_INFO, "GLA: destroyed unified device (%zu channels)", entries.size());
     }
 
+    // Called once before AddDevice, while HasOwner() == false, so all changes
+    // apply in-place immediately without going through RequestConfigurationChange.
     void init()
     {
-        struct mach_timebase_info tb;
-        mach_timebase_info (&tb);
-        hostTicksPerFrame = (double (tb.denom) / double (tb.numer)) * 1e9 / sampleRate_;
-
         const UInt32 nChannels = static_cast<UInt32> (entries.size());
+        stream_ = AddStreamAsync (makeStreamParams_ (nChannels));
 
-        aspl::StreamParameters sp;
-        sp.Direction          = aspl::Direction::Input;
-        sp.StartingChannel    = 1;
-        sp.Format             = {};
-        sp.Format.mSampleRate       = sampleRate_;
-        sp.Format.mFormatID         = kAudioFormatLinearPCM;
-        sp.Format.mFormatFlags      = kAudioFormatFlagIsFloat
-                                    | kAudioFormatFlagIsPacked
-                                    | kAudioFormatFlagsNativeEndian;
-        sp.Format.mChannelsPerFrame = nChannels;
-        sp.Format.mBitsPerChannel   = 32;
-        sp.Format.mBytesPerFrame    = 4 * nChannels;
-        sp.Format.mFramesPerPacket  = 1;
-        sp.Format.mBytesPerPacket   = 4 * nChannels;
-        AddStreamAsync (sp);
+        // Pass shared ownership of the ring vector so the handler keeps the
+        // buffers alive even if the device is removed while an IO cycle is
+        // still in flight on coreaudiod's HAL thread.
+        SetIOHandler (std::make_shared<UnifiedIOHandler> (nChannels, rings));
+    }
 
-        auto handler = std::make_shared<UnifiedIOHandler> (nChannels, &rings);
-        SetIOHandler (handler);
+    // Reconfigure the device's channel map without removing/re-adding it.
+    // Uses RequestConfigurationChange so coreaudiod performs the swap at a
+    // clean IO boundary. onRingsReady is called on the HAL non-realtime thread
+    // immediately after the new rings and IO handler are installed; callers use
+    // it to point the USB reader at the new buffers.
+    //
+    // Called from the IPC client thread. Safe: ASPL guarantees AddDevice /
+    // RemoveDevice / RequestConfigurationChange are all thread-safe.
+    void updateChannelMap (const std::vector<GLAChannelEntry>& newEntries,
+                           std::function<void()> onRingsReady = {})
+    {
+        RequestConfigurationChange ([this,
+                                     newEntries,
+                                     onRingsReady = std::move (onRingsReady)]() mutable
+        {
+            // --- Inside PerformConfigurationChange ---
+            // HAL non-realtime thread; IO is quiesced for the duration.
+
+            if (stream_)
+            {
+                RemoveStreamAsync (stream_);
+                stream_.reset();
+            }
+
+            entries = newEntries;
+            channelToSlot.clear();
+
+            auto newRings = std::make_shared<RingVec>();
+            const UInt32 nCh = static_cast<UInt32> (newEntries.size());
+
+            for (size_t i = 0; i < newEntries.size(); ++i)
+            {
+                channelToSlot[newEntries[i].channelIndex] = i;
+                newRings->push_back (std::make_unique<GLARingBuffer> (ringCapacity_));
+            }
+
+            rings = newRings;
+
+            stream_ = AddStreamAsync (makeStreamParams_ (nCh));
+            SetIOHandler (std::make_shared<UnifiedIOHandler> (nCh, rings));
+
+            if (onRingsReady)
+                onRingsReady();
+        });
     }
 
     //==============================================================================
@@ -125,10 +165,8 @@ struct GLAUnifiedDevice  : public aspl::Device
     {
         auto it = channelToSlot.find (channelIndex);
         if (it == channelToSlot.end()) return nullptr;
-        return rings[it->second].get();
+        return (*rings)[it->second].get();
     }
-
-    std::vector<std::unique_ptr<GLARingBuffer>>& ringBuffers() { return rings; }
 
     static constexpr UInt32 sampleRate_   = 48000;
     static constexpr size_t ringCapacity_ = 4096;
@@ -141,6 +179,19 @@ protected:
                                    UInt64*  outHostTime,
                                    UInt64*  outSeed) override
     {
+        // Guard: hostTicksPerFrame must be positive. If it is zero or negative
+        // (which must never happen given constructor initialisation, but we defend
+        // against it here), ticksPerPeriod would be 0 and the counter-advance
+        // condition would always be true, spinning coreaudiod at 100% CPU.
+        const double tpf = hostTicksPerFrame;
+        if (tpf <= 0.0)
+        {
+            *outSampleTime = 0.0;
+            *outHostTime   = mach_absolute_time();
+            *outSeed       = 1;
+            return kAudioHardwareNoError;
+        }
+
         UInt64 anchor = anchorHostTime.load (std::memory_order_relaxed);
 
         if (anchor == 0)
@@ -150,7 +201,7 @@ protected:
         }
 
         const auto period = static_cast<UInt64> (GetZeroTimeStampPeriod());
-        const double ticksPerPeriod = hostTicksPerFrame * static_cast<double> (period);
+        const double ticksPerPeriod = tpf * static_cast<double> (period);
         const UInt64 now = mach_absolute_time();
         UInt64 ctr = periodCounter.load (std::memory_order_relaxed);
 
@@ -165,6 +216,8 @@ protected:
 
 private:
     //==============================================================================
+    using RingVec = std::vector<std::unique_ptr<GLARingBuffer>>;
+
     static aspl::DeviceParameters makeParams_ (size_t channelCount)
     {
         aspl::DeviceParameters p;
@@ -180,11 +233,30 @@ private:
         return p;
     }
 
+    static aspl::StreamParameters makeStreamParams_ (UInt32 nChannels)
+    {
+        aspl::StreamParameters sp;
+        sp.Direction                = aspl::Direction::Input;
+        sp.StartingChannel          = 1;
+        sp.Format                   = {};
+        sp.Format.mSampleRate       = sampleRate_;
+        sp.Format.mFormatID         = kAudioFormatLinearPCM;
+        sp.Format.mFormatFlags      = kAudioFormatFlagIsFloat
+                                    | kAudioFormatFlagIsPacked
+                                    | kAudioFormatFlagsNativeEndian;
+        sp.Format.mChannelsPerFrame = nChannels;
+        sp.Format.mBitsPerChannel   = 32;
+        sp.Format.mBytesPerFrame    = 4 * nChannels;
+        sp.Format.mFramesPerPacket  = 1;
+        sp.Format.mBytesPerPacket   = 4 * nChannels;
+        return sp;
+    }
+
     //==============================================================================
     struct UnifiedIOHandler   : public aspl::IORequestHandler
     {
-        UnifiedIOHandler (UInt32 n, std::vector<std::unique_ptr<GLARingBuffer>>* r)
-            : numChannels (n), rings (r)
+        UnifiedIOHandler (UInt32 n, std::shared_ptr<RingVec> r)
+            : numChannels (n), rings (std::move (r))
         {}
 
         void OnReadClientInput (const std::shared_ptr<aspl::Client>& /*client*/,
@@ -201,11 +273,18 @@ private:
             }
 
             const UInt32 frames = bytesCount / (sizeof (float) * numChannels);
+
+            if (frames > 4096)
+            {
+                std::memset (bytes, 0, bytesCount);
+                return;
+            }
+
             auto out = static_cast<float*> (bytes);
 
             for (UInt32 ch = 0; ch < numChannels; ++ch)
             {
-                if (ch >= rings->size() || !(*rings)[ch])
+                if (ch >= rings->size() || ! (*rings)[ch])
                     continue;
 
                 (*rings)[ch]->read (scratch, frames);
@@ -216,17 +295,18 @@ private:
         }
 
     private:
-        UInt32 numChannels;
-        std::vector<std::unique_ptr<GLARingBuffer>>* rings;
-        float scratch[4096];
+        UInt32                   numChannels;
+        std::shared_ptr<RingVec> rings;   // shared — outlives the device if an IO cycle is in flight
+        float                    scratch[4096];
     };
 
     //==============================================================================
-    std::vector<GLAChannelEntry> entries;
+    std::vector<GLAChannelEntry>    entries;
     std::unordered_map<int, size_t> channelToSlot;
-    std::vector<std::unique_ptr<GLARingBuffer>> rings;
+    std::shared_ptr<RingVec>        rings;
+    std::shared_ptr<aspl::Stream>   stream_;   // null for stubs
 
     std::atomic<UInt64> anchorHostTime { 0 };
     std::atomic<UInt64> periodCounter  { 0 };
-    double hostTicksPerFrame = 0;
+    double hostTicksPerFrame = 0.0;
 };

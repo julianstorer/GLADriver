@@ -28,6 +28,7 @@ public:
         addAndMakeVisible (labelBridge);
         addAndMakeVisible (comboBridge);
         addAndMakeVisible (labelStatus);
+        addAndMakeVisible (labelDriver);
 
         comboNetif.addListener (this);
         comboBridge.addListener (this);
@@ -74,6 +75,8 @@ public:
         comboBridge.setBounds (area.removeFromTop (rowHeight));
         area.removeFromTop (8);
         labelStatus.setBounds (area.removeFromTop (20));
+        area.removeFromTop (4);
+        labelDriver.setBounds (area.removeFromTop (20));
         area.removeFromTop (8);
 
         for (auto& row : patchRows)
@@ -131,6 +134,8 @@ public:
         }
 
         comboBridge.setSelectedId (current, juce::dontSendNotification);
+
+        labelDriver.setText (backend.getDriverStatus(), juce::dontSendNotification);
     }
 
 
@@ -227,6 +232,7 @@ private:
     juce::Label    labelBridge { "", "USB Bridge:" };
     juce::ComboBox comboBridge;
     juce::Label    labelStatus { "", "Status: starting..." };
+    juce::Label    labelDriver { "", "Driver: checking..." };
 
     // Patchbay: one row per USB channel slot.
     struct PatchRow

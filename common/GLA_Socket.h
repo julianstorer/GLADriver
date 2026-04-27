@@ -4,6 +4,7 @@
 #include <cstring>
 #include <fcntl.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/un.h>
 #include <unistd.h>
 #include <cstdint>
@@ -34,7 +35,9 @@ inline bool glaSendMessage (int fd, const std::vector<uint8_t>& payload)
 }
 
 // Receive a complete length-prefixed message. Blocks until full message arrives or error.
-// Returns false on EOF/error.
+// Returns false on EOF/error or if the declared length exceeds the sanity limit.
+static constexpr uint32_t kGLAMaxMessageLen = 1u * 1024u * 1024u; // 1 MB — no legitimate message approaches this
+
 inline bool glaRecvMessage (int fd, std::vector<uint8_t>& out)
 {
     uint32_t len = 0;
@@ -49,6 +52,11 @@ inline bool glaRecvMessage (int fd, std::vector<uint8_t>& out)
 
         got += static_cast<size_t> (n);
     }
+
+    // Reject absurdly large lengths before allocating — a malformed sender sending
+    // 0xFFFFFFFF would otherwise trigger std::bad_alloc -> std::terminate in the driver.
+    if (len > kGLAMaxMessageLen)
+        return false;
 
     out.resize (len);
     got = 0;
@@ -81,6 +89,10 @@ inline int glaCreateServer (const std::string& path)
         close (fd);
         return -1;
     }
+
+    // Allow _coreaudiod (which runs the driver) to connect — it's a different
+    // user so it hits the "other" permission bits, which need write access.
+    chmod (path.c_str(), 0777);
 
 	if (listen (fd, 8) < 0)
 	{

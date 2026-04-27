@@ -3,7 +3,10 @@
     "allow": [
       "WebFetch(domain:github.com)",
       "Bash(/usr/bin/log show *)",
-      "Bash(cmake --build .)"
+      "Bash(cmake --build .)",
+      "Bash(./run build-monitor *)",
+      "Bash(cmake --build build --config Debug)",
+      "Bash(cmake --build build)"
     ]
   }
 }

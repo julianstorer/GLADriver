@@ -7,11 +7,15 @@
 #include <vector>
 #include <cstring>
 #include <syslog.h>
+#include <unistd.h>
+#include <CoreAudio/CoreAudio.h>
+#include <CoreFoundation/CoreFoundation.h>
 #include <juce_events/juce_events.h>
 #include "GLA_IPCServer.h"
 #include "../../common/GLA_IPCTypes.h"
 #include "GLA_AVDECCController.h"
-#include "GLA_USBBridgeMonitor.h"
+
+static constexpr const char* kGLADriverUID = "com.greenlight.gla-injector.unified";
 
 
 //==============================================================================
@@ -85,11 +89,14 @@ public:
         {
             auto entityList = buildEntityList();
             auto map        = buildChannelMap();
-            ipc.broadcastEntityList (entityList);
-            ipc.broadcastChannelMap (map);
 
-            juce::MessageManager::callAsync ([this, entityList = std::move (entityList)]() mutable
+            juce::MessageManager::callAsync ([this,
+                                              entityList = std::move (entityList),
+                                              map        = std::move (map)]() mutable
             {
+                ipc.broadcastEntityList (entityList);
+                ipc.broadcastChannelMap (map);
+
                 if (onEntityList)
                     onEntityList (entityList);
             });
@@ -167,6 +174,25 @@ public:
     void setEntityListCallback (EntityListCallback cb)   { onEntityList = std::move (cb); }
     void setChannelMapCallback (ChannelMapCallback cb)   { onChannelMap = std::move (cb); }
 
+    // Returns a short status string for the UI. Safe to call from the message thread.
+    juce::String getDriverStatus()
+    {
+        int  clients   = ipc.getConnectedClientCount();
+        bool installed = isDriverBundleInstalled();
+        bool hasDevice = isGLADevicePresent();
+
+        if (clients > 0)
+            return "Driver: connected" + (hasDevice ? juce::String() : " (no device yet)");
+
+        if (! installed)
+            return "Driver: not installed";
+
+        if (hasDevice)
+            return "Driver: installed, not connected";
+
+        return "Driver: installed, waiting for channel map";
+    }
+
 private:
     //==============================================================================
     struct RoutingEntry
@@ -175,6 +201,46 @@ private:
         uint64_t entityId;
         std::string displayName;
     };
+
+    static bool isDriverBundleInstalled()
+    {
+        return access ("/Library/Audio/Plug-Ins/HAL/GLAInjector.driver", F_OK) == 0;
+    }
+
+    static bool isGLADevicePresent()
+    {
+        AudioObjectPropertyAddress prop { kAudioHardwarePropertyDevices,
+                                          kAudioObjectPropertyScopeGlobal,
+                                          kAudioObjectPropertyElementMain };
+        UInt32 dataSize = 0;
+        if (AudioObjectGetPropertyDataSize (kAudioObjectSystemObject, &prop,
+                                            0, nullptr, &dataSize) != noErr)
+            return false;
+
+        std::vector<AudioDeviceID> ids (dataSize / sizeof (AudioDeviceID));
+        AudioObjectGetPropertyData (kAudioObjectSystemObject, &prop,
+                                    0, nullptr, &dataSize, ids.data());
+
+        for (auto devId : ids)
+        {
+            AudioObjectPropertyAddress uidProp { kAudioDevicePropertyDeviceUID,
+                                                 kAudioObjectPropertyScopeGlobal,
+                                                 kAudioObjectPropertyElementMain };
+            CFStringRef cfStr = nullptr;
+            UInt32 sz = sizeof (cfStr);
+            if (AudioObjectGetPropertyData (devId, &uidProp, 0, nullptr, &sz, &cfStr) != noErr || ! cfStr)
+                continue;
+
+            char buf[256] = {};
+            CFStringGetCString (cfStr, buf, sizeof (buf), kCFStringEncodingUTF8);
+            CFRelease (cfStr);
+
+            if (std::string (buf) == kGLADriverUID)
+                return true;
+        }
+
+        return false;
+    }
 
     std::vector<GLAChannelEntry> buildChannelMap() const
     {
@@ -216,7 +282,6 @@ private:
     std::string usbBridgeUID;
 
     AVDECCController avdecc;
-    USBBridgeMonitor bridgeMon;
     GLAIPCServer ipc;
 
     EntityListCallback onEntityList;

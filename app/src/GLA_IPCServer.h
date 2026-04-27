@@ -7,7 +7,7 @@
 #include <cstring>
 #include <functional>
 #include <mutex>
-#include <sys/select.h>
+#include <poll.h>
 #include <syslog.h>
 #include <thread>
 #include <unistd.h>
@@ -124,36 +124,36 @@ public:
         }
     }
 
+    int getConnectedClientCount()
+    {
+        std::lock_guard<std::mutex> lk (clientsMutex);
+        return static_cast<int> (clients.size());
+    }
+
 private:
     //==============================================================================
     void runLoop()
     {
         while (running)
         {
-            fd_set readfds;
-            FD_ZERO (&readfds);
-            FD_SET (serverFd, &readfds);
-            int maxfd = serverFd;
+            std::vector<pollfd> pfds;
 
             {
                 std::lock_guard<std::mutex> lk (clientsMutex);
+                pfds.reserve (1 + clients.size());
+                pfds.push_back ({ serverFd, POLLIN, 0 });
 
                 for (int fd : clients)
-                {
-                    FD_SET (fd, &readfds);
-
-                    if (fd > maxfd)
-                        maxfd = fd;
-                }
+                    pfds.push_back ({ fd, POLLIN, 0 });
             }
 
-            timeval tv { 1, 0 }; // 1s timeout so we can check running
-            int ret = select (maxfd + 1, &readfds, nullptr, nullptr, &tv);
+            // 1 s timeout so we can recheck `running` even when idle.
+            int ret = poll (pfds.data(), static_cast<nfds_t> (pfds.size()), 1000);
 
             if (ret <= 0)
                 continue;
 
-            if (FD_ISSET (serverFd, &readfds))
+            if (pfds[0].revents & POLLIN)
             {
                 if (int clientFd = glaAcceptClient (serverFd); clientFd >= 0)
                 {
@@ -169,6 +169,7 @@ private:
                 }
             }
 
+            // Snapshot client list; indices in pfds[1..] match clients at snapshot time.
             std::vector<int> clientsCopy;
 
             {
@@ -176,11 +177,12 @@ private:
                 clientsCopy = clients;
             }
 
-            for (int fd : clientsCopy)
+            for (size_t i = 0; i < clientsCopy.size(); ++i)
             {
-                if (!FD_ISSET (fd, &readfds))
+                if (! (pfds[1 + i].revents & POLLIN))
                     continue;
 
+                int fd = clientsCopy[i];
                 std::vector<uint8_t> msg;
 
                 if (! glaRecvMessage (fd, msg))
