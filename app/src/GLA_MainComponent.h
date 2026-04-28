@@ -286,18 +286,30 @@ private:
                        : static_cast<int> (usbChannelInfos.size());
         rowCount = std::min (rowCount, maxBridgeChannels);
 
-        // Reset backend to a clean fixed-size slot table, then set 1:1 defaults.
-        backend.resetSlots (rowCount);
+        // Build the full initial slot table and send ONE broadcast to the driver.
+        // Previously this was resetSlots(n) + N×setSlot(), causing N+1 rapid
+        // applyChannelMap() calls in the driver — each triggering RequestConfigurationChange
+        // and a USB reader stop/start cycle, leading to race conditions and no audio.
+        {
+            std::vector<AppBackend::SlotConfig> slots;
+            slots.reserve (static_cast<size_t> (rowCount));
+            for (int ch = 0; ch < rowCount; ++ch)
+            {
+                AppBackend::SlotConfig s;
+                if (ch < static_cast<int> (usbChannelInfos.size()))
+                {
+                    auto const& info = usbChannelInfos[static_cast<size_t> (ch)];
+                    s.usbChannel  = static_cast<uint8_t> (ch);
+                    s.entityId    = info.talkerEntityId;
+                    s.displayName = info.sourceName;
+                }
+                slots.push_back (std::move (s));
+            }
+            backend.initializeSlots (slots);
+        }
 
         for (int ch = 0; ch < rowCount; ++ch)
         {
-            // Default 1:1: slot ch → USB channel ch
-            if (ch < static_cast<int> (usbChannelInfos.size()))
-            {
-                auto const& info = usbChannelInfos[static_cast<size_t> (ch)];
-                backend.setSlot (ch, static_cast<uint8_t> (ch), info.talkerEntityId, info.sourceName);
-            }
-
             PatchRow row;
             row.usbChannel = (ch < static_cast<int> (usbChannelInfos.size())) ? ch : -1;
             row.label = std::make_unique<juce::Label> ("", "Ch " + juce::String (ch + 1));

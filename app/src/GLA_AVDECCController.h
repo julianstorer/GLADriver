@@ -129,8 +129,13 @@ public:
             auto const& configNode = guard->getCurrentConfigurationNode();
             for (auto const& [streamIdx, streamNode] : configNode.streamInputs)
             {
-                int channelCount = 2; // Milan stereo default
                 auto fi = la::avdecc::entity::model::StreamFormatInfo::create (streamNode.dynamicModel.streamFormat);
+
+                // Skip CRF streams — they carry clock reference data, not audio channels.
+                if (fi && fi->getType() == la::avdecc::entity::model::StreamFormatInfo::Type::ClockReference)
+                    continue;
+
+                int channelCount = 2; // Milan stereo default
                 if (fi && fi->getChannelsCount() > 0)
                     channelCount = static_cast<int> (fi->getChannelsCount());
                 result.push_back ({ static_cast<uint8_t> (streamIdx), 0, channelCount });

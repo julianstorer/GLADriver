@@ -101,6 +101,28 @@ public:
         avdecc.start (iface);
     }
 
+    struct SlotConfig
+    {
+        uint8_t     usbChannel  { 0xFF };
+        uint64_t    entityId    { 0 };
+        std::string displayName;
+    };
+
+    // Atomically set the full slot table and broadcast once.
+    // Use this instead of resetSlots + N×setSlot to avoid N+1 driver reconfigurations.
+    void initializeSlots (const std::vector<SlotConfig>& slots)
+    {
+        {
+            std::lock_guard<std::mutex> lk (mutex);
+            routing.resize (slots.size());
+            for (size_t i = 0; i < slots.size(); ++i)
+                routing[i] = { slots[i].usbChannel, slots[i].entityId, slots[i].displayName };
+        }
+        auto map = buildChannelMap();
+        ipc.broadcastChannelMap (map);
+        if (onChannelMap) onChannelMap (map);
+    }
+
     // Resize routing to n slots, all unassigned (channelIndex=0xFF = silence).
     // Call whenever the bridge or listener changes.
     void resetSlots (int n)
