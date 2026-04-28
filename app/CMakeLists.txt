@@ -22,6 +22,7 @@ target_link_libraries(gla_app PRIVATE
     juce::juce_core
     "-framework CoreAudio"
     "-framework CoreFoundation"
-    "-framework AudioToolbox")
+    "-framework AudioToolbox"
+    "-framework SystemConfiguration")
 
 target_compile_options(gla_app PRIVATE -Wall -Wextra)

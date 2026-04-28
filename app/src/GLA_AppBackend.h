@@ -128,37 +128,45 @@ public:
 
     void setRouting (uint8_t channelIndex, uint64_t entityId)
     {
-        std::string name = "Unknown";
-
-        for (auto const& r : avdecc.getEntities())
-        {
-            if (r.id == entityId)
-            {
-                name = r.name;
-                break;
-            }
-        }
-
         {
             std::lock_guard<std::mutex> lk (mutex);
-            bool found = false;
 
-            for (auto& r : routing)
+            if (entityId == 0)
             {
-                if (r.channelIndex == channelIndex)
-                {
-                    r.entityId = entityId;
-                    r.displayName = name;
-                    found = true;
-                    break;
-                }
+                routing.erase (std::remove_if (routing.begin(), routing.end(),
+                                               [channelIndex] (const RoutingEntry& r) {
+                                                   return r.channelIndex == channelIndex;
+                                               }),
+                               routing.end());
             }
+            else
+            {
+                std::string name;
+                for (auto const& r : avdecc.getEntities())
+                {
+                    if (r.id == entityId) { name = r.name; break; }
+                }
 
-            if (! found)
-                routing.push_back ({ channelIndex, entityId, name });
+                bool found = false;
+                for (auto& r : routing)
+                {
+                    if (r.channelIndex == channelIndex)
+                    {
+                        r.entityId = entityId;
+                        r.displayName = name;
+                        found = true;
+                        break;
+                    }
+                }
+
+                if (! found)
+                    routing.push_back ({ channelIndex, entityId, name });
+            }
         }
 
-        ipc.broadcastChannelMap (buildChannelMap());
+        auto map = buildChannelMap();
+        ipc.broadcastChannelMap (map);
+        if (onChannelMap) onChannelMap (map);
     }
 
     void setUSBBridge (const std::string& uid)

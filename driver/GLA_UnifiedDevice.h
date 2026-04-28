@@ -12,7 +12,7 @@
 #include <mach/mach_time.h>
 #include <syslog.h>
 #include "../common/GLA_IPCTypes.h"
-#include "../common/GLA_RingBuffer.h"
+#include "../common/GLA_ResamplingFIFO.h"
 
 
 // Single CoreAudio device. All AVB sources appear as channels in one interleaved stream.
@@ -22,7 +22,7 @@ struct GLAUnifiedDevice  : public aspl::Device
                       const std::vector<GLAChannelEntry>& channelEntries)
         : aspl::Device (context, makeParams_ (channelEntries.size())),
           entries (channelEntries),
-          rings (std::make_shared<RingVec>())
+          rings (std::make_shared<FifoVec>())
     {
         // Compute timing here (not in init()) so GetZeroTimeStampImpl is valid
         // from construction, even for stub devices that never call init().
@@ -33,7 +33,7 @@ struct GLAUnifiedDevice  : public aspl::Device
         for (size_t i = 0; i < channelEntries.size(); ++i)
         {
             channelToSlot[channelEntries[i].channelIndex] = i;
-            rings->push_back (std::make_unique<GLARingBuffer> (ringCapacity_));
+            rings->push_back (std::make_unique<GLAResamplingFIFO> (double (sampleRate_)));
         }
     }
 
@@ -49,7 +49,7 @@ struct GLAUnifiedDevice  : public aspl::Device
         const UInt32 nChannels = static_cast<UInt32> (entries.size());
         stream_ = AddStreamAsync (makeStreamParams_ (nChannels));
 
-        // Pass shared ownership of the ring vector so the handler keeps the
+        // Pass shared ownership of the FIFO vector so the handler keeps the
         // buffers alive even if the device is removed while an IO cycle is
         // still in flight on coreaudiod's HAL thread.
         SetIOHandler (std::make_shared<UnifiedIOHandler> (nChannels, rings));
@@ -58,7 +58,7 @@ struct GLAUnifiedDevice  : public aspl::Device
     // Reconfigure the device's channel map without removing/re-adding it.
     // Uses RequestConfigurationChange so coreaudiod performs the swap at a
     // clean IO boundary. onRingsReady is called on the HAL non-realtime thread
-    // immediately after the new rings and IO handler are installed; callers use
+    // immediately after the new FIFOs and IO handler are installed; callers use
     // it to point the USB reader at the new buffers.
     //
     // Called from the IPC client thread. Safe: ASPL guarantees AddDevice /
@@ -82,13 +82,13 @@ struct GLAUnifiedDevice  : public aspl::Device
             entries = newEntries;
             channelToSlot.clear();
 
-            auto newRings = std::make_shared<RingVec>();
+            auto newRings = std::make_shared<FifoVec>();
             const UInt32 nCh = static_cast<UInt32> (newEntries.size());
 
             for (size_t i = 0; i < newEntries.size(); ++i)
             {
                 channelToSlot[newEntries[i].channelIndex] = i;
-                newRings->push_back (std::make_unique<GLARingBuffer> (ringCapacity_));
+                newRings->push_back (std::make_unique<GLAResamplingFIFO> (double (sampleRate_)));
             }
 
             rings = newRings;
@@ -161,16 +161,15 @@ struct GLAUnifiedDevice  : public aspl::Device
     }
 
     //==============================================================================
-    GLARingBuffer* getChannelRingBuffer (int channelIndex)
+    GLAResamplingFIFO* getChannelFIFO (int channelIndex)
     {
         auto it = channelToSlot.find (channelIndex);
         if (it == channelToSlot.end()) return nullptr;
         return (*rings)[it->second].get();
     }
 
-    static constexpr UInt32 sampleRate_   = 48000;
-    static constexpr size_t ringCapacity_ = 4096;
-    static constexpr UInt32 zeroTsPeriod  = 512;
+    static constexpr UInt32 sampleRate_  = 48000;
+    static constexpr UInt32 zeroTsPeriod = 512;
 
 protected:
     //==============================================================================
@@ -216,7 +215,7 @@ protected:
 
 private:
     //==============================================================================
-    using RingVec = std::vector<std::unique_ptr<GLARingBuffer>>;
+    using FifoVec = std::vector<std::unique_ptr<GLAResamplingFIFO>>;
 
     static aspl::DeviceParameters makeParams_ (size_t channelCount)
     {
@@ -255,7 +254,7 @@ private:
     //==============================================================================
     struct UnifiedIOHandler   : public aspl::IORequestHandler
     {
-        UnifiedIOHandler (UInt32 n, std::shared_ptr<RingVec> r)
+        UnifiedIOHandler (UInt32 n, std::shared_ptr<FifoVec> r)
             : numChannels (n), rings (std::move (r))
         {}
 
@@ -280,6 +279,7 @@ private:
                 return;
             }
 
+            std::memset (bytes, 0, bytesCount);
             auto out = static_cast<float*> (bytes);
 
             for (UInt32 ch = 0; ch < numChannels; ++ch)
@@ -296,14 +296,14 @@ private:
 
     private:
         UInt32                   numChannels;
-        std::shared_ptr<RingVec> rings;   // shared — outlives the device if an IO cycle is in flight
+        std::shared_ptr<FifoVec> rings;   // shared — outlives the device if an IO cycle is in flight
         float                    scratch[4096];
     };
 
     //==============================================================================
     std::vector<GLAChannelEntry>    entries;
     std::unordered_map<int, size_t> channelToSlot;
-    std::shared_ptr<RingVec>        rings;
+    std::shared_ptr<FifoVec>        rings;
     std::shared_ptr<aspl::Stream>   stream_;   // null for stubs
 
     std::atomic<UInt64> anchorHostTime { 0 };

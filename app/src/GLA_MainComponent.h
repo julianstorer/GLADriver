@@ -2,11 +2,13 @@
 #pragma once
 
 #include <juce_gui_basics/juce_gui_basics.h>
+#include <algorithm>
 #include <vector>
 #include <CoreAudio/CoreAudio.h>
 #include <CoreFoundation/CoreFoundation.h>
 #include <ifaddrs.h>
 #include <net/if.h>
+#include <SystemConfiguration/SCNetworkConfiguration.h>
 #include "../../common/GLA_IPCTypes.h"
 #include "GLA_AppBackend.h"
 
@@ -40,8 +42,12 @@ public:
             onEntityListReceived (e);
         });
 
-        auto ifaces = getNetworkInterfaces();
-        std::string startIface = ifaces.empty() ? "en0" : ifaces.front();
+        backend.setChannelMapCallback ([this] (const std::vector<GLAChannelEntry>& m)
+        {
+            onChannelMapReceived (m);
+        });
+
+        std::string startIface = netifBSDNames.empty() ? "en0" : netifBSDNames.front();
         if (!backend.start (startIface))
             labelStatus.setText ("Status: IPC server failed to start", juce::dontSendNotification);
 
@@ -92,13 +98,15 @@ public:
     {
         if (box == &comboNetif)
         {
-            auto iface = comboNetif.getText().toStdString();
-            if (!iface.empty()) backend.setNetworkInterface (iface);
+            int idx = comboNetif.getSelectedId() - 1;
+            if (idx >= 0 && idx < static_cast<int> (netifBSDNames.size()))
+                backend.setNetworkInterface (netifBSDNames[static_cast<size_t> (idx)]);
         }
         else if (box == &comboBridge)
         {
-            auto uid = comboBridge.getItemText (comboBridge.getSelectedItemIndex()).toStdString();
-            backend.setUSBBridge (uid);
+            int idx = comboBridge.getSelectedId() - 1;
+            if (idx >= 0 && idx < static_cast<int> (bridgeUIDs.size()))
+                backend.setUSBBridge (bridgeUIDs[static_cast<size_t> (idx)]);
         }
         else
         {
@@ -107,12 +115,20 @@ public:
             {
                 if (patchRows[static_cast<size_t> (ch)].combo.get() == box)
                 {
-                    int selectedId = box->getSelectedId();
-                    if (selectedId > 0 &&
-                        static_cast<size_t> (selectedId - 1) < entities.size())
+                    // usbChannel is the actual channelIndex this row represents,
+                    // kept in sync by syncCombosToMap().
+                    const int usbCh   = patchRows[static_cast<size_t> (ch)].usbChannel;
+                    const int selId   = box->getSelectedId();
+
+                    if (selId == 1000)
                     {
-                        auto eid = entities[static_cast<size_t> (selectedId - 1)].entityId;
-                        backend.setRouting (static_cast<uint8_t> (ch), eid);
+                        backend.setRouting (static_cast<uint8_t> (usbCh), 0);
+                    }
+                    else if (selId > 0 &&
+                             static_cast<size_t> (selId - 1) < entities.size())
+                    {
+                        auto eid = entities[static_cast<size_t> (selId - 1)].entityId;
+                        backend.setRouting (static_cast<uint8_t> (usbCh), eid);
                     }
                     break;
                 }
@@ -126,11 +142,12 @@ public:
         auto devices = getAudioInputDevices();
         int current = comboBridge.getSelectedId();
         comboBridge.clear (juce::dontSendNotification);
+        bridgeUIDs.clear();
 
         for (int i = 0; i < static_cast<int> (devices.size()); ++i)
         {
-            comboBridge.addItem (devices[static_cast<size_t> (i)].first + " (" +
-                                devices[static_cast<size_t> (i)].second + ")", i + 1);
+            bridgeUIDs.push_back (devices[static_cast<size_t> (i)].second);
+            comboBridge.addItem (devices[static_cast<size_t> (i)].first, i + 1);
         }
 
         comboBridge.setSelectedId (current, juce::dontSendNotification);
@@ -149,9 +166,14 @@ private:
         auto ifaces = getNetworkInterfaces();
         int current = comboNetif.getSelectedId();
         comboNetif.clear (juce::dontSendNotification);
+        netifBSDNames.clear();
 
         for (int i = 0; i < static_cast<int> (ifaces.size()); ++i)
-            comboNetif.addItem (ifaces[static_cast<size_t> (i)], i + 1);
+        {
+            auto& [disp, bsd] = ifaces[static_cast<size_t> (i)];
+            netifBSDNames.push_back (bsd);
+            comboNetif.addItem (juce::String (disp) + " (" + juce::String (bsd) + ")", i + 1);
+        }
 
         comboNetif.setSelectedId (current > 0 ? current : 1, juce::dontSendNotification);
     }
@@ -167,21 +189,47 @@ private:
     void onChannelMapReceived (const std::vector<GLAChannelEntry>& entries)
     {
         channelMap = entries;
+        syncCombosToMap();
+    }
 
-        for (auto const& e : entries)
+    void syncCombosToMap()
+    {
+        // Reset all rows to "(none)"
+        for (auto& row : patchRows)
+            row.combo->setSelectedId (1000, juce::dontSendNotification);
+
+        // Sort active entries by channelIndex so display order is stable
+        auto sorted = channelMap;
+        std::sort (sorted.begin(), sorted.end(), [] (const GLAChannelEntry& a, const GLAChannelEntry& b)
         {
-            auto ch = e.channelIndex;
+            return a.channelIndex < b.channelIndex;
+        });
 
-            if (ch >= static_cast<int> (patchRows.size()))
-                continue;
+        // Compute first fresh channelIndex for empty rows (one past the highest active)
+        int nextFresh = 0;
+        for (auto const& e : sorted)
+            nextFresh = std::max (nextFresh, static_cast<int> (e.channelIndex) + 1);
 
-            for (int i = 0; i < static_cast<int> (entities.size()); ++i)
+        // Assign active entries to consecutive rows with no gaps
+        for (size_t r = 0; r < patchRows.size(); ++r)
+        {
+            if (r < sorted.size())
             {
-                if (entities[static_cast<size_t> (i)].entityId == e.entityId)
+                patchRows[r].usbChannel = sorted[r].channelIndex;
+
+                for (int i = 0; i < static_cast<int> (entities.size()); ++i)
                 {
-                    patchRows[static_cast<size_t> (ch)].combo->setSelectedId (i + 1, juce::dontSendNotification);
-                    break;
+                    if (entities[static_cast<size_t> (i)].entityId == sorted[r].entityId)
+                    {
+                        patchRows[r].combo->setSelectedId (i + 1, juce::dontSendNotification);
+                        break;
+                    }
                 }
+            }
+            else
+            {
+                // Empty rows get fresh channelIndex values so new selections append cleanly
+                patchRows[r].usbChannel = nextFresh + static_cast<int> (r - sorted.size());
             }
         }
     }
@@ -222,6 +270,7 @@ private:
         }
 
         resized();
+        syncCombosToMap();
     }
 
     //==============================================================================
@@ -247,6 +296,9 @@ private:
     std::vector<GLAChannelEntry> channelMap;
 
     int bridgeChannelCount = 0;
+
+    std::vector<std::string> netifBSDNames;
+    std::vector<std::string> bridgeUIDs;
 
     //==============================================================================
     // Enumerate CoreAudio input devices (potential USB bridges).
@@ -309,39 +361,74 @@ private:
                 return buf2;
             };
 
-            result.push_back ({ getStr (kAudioObjectPropertyName),
-                                getStr (kAudioDevicePropertyDeviceUID) });
+            auto uid = getStr (kAudioDevicePropertyDeviceUID);
+
+            // Never offer our own virtual device as a bridge source — selecting it
+            // would make the USB reader read back the same zeros it's supposed to fill.
+            if (uid == kGLADriverUID)
+                continue;
+
+            result.push_back ({ getStr (kAudioObjectPropertyName), uid });
         }
 
         return result;
     }
 
-    static std::vector<std::string> getNetworkInterfaces()
+    // Returns {displayName, bsdName} pairs for UP, non-loopback interfaces that
+    // System Preferences considers real (filters out utun*, awdl*, etc.).
+    static std::vector<std::pair<std::string, std::string>> getNetworkInterfaces()
     {
-        std::vector<std::string> result;
-
+        // Build set of UP, non-loopback BSD names from getifaddrs.
+        std::vector<std::string> upIfaces;
         struct ifaddrs* ifaddr = nullptr;
-        if (getifaddrs (&ifaddr) != 0)
-            return result;
-
-        for (auto* ifa = ifaddr; ifa; ifa = ifa->ifa_next)
+        if (getifaddrs (&ifaddr) == 0)
         {
-            if (! ifa->ifa_addr)
-                continue;
-
-            if (ifa->ifa_flags & IFF_LOOPBACK)
-                continue;
-
-            if (! (ifa->ifa_flags & IFF_UP))
-                continue;
-
-            std::string name = ifa->ifa_name;
-
-            if (std::find (result.begin(), result.end(), name) == result.end())
-                result.push_back (name);
+            for (auto* ifa = ifaddr; ifa; ifa = ifa->ifa_next)
+            {
+                if (! ifa->ifa_addr)                  continue;
+                if (ifa->ifa_flags & IFF_LOOPBACK)    continue;
+                if (! (ifa->ifa_flags & IFF_UP))      continue;
+                std::string n = ifa->ifa_name;
+                if (std::find (upIfaces.begin(), upIfaces.end(), n) == upIfaces.end())
+                    upIfaces.push_back (n);
+            }
+            freeifaddrs (ifaddr);
         }
 
-        freeifaddrs (ifaddr);
+        std::vector<std::pair<std::string, std::string>> result;
+
+        CFArrayRef scIfaces = SCNetworkInterfaceCopyAll();
+        if (! scIfaces)
+            return result;
+
+        for (CFIndex i = 0; i < CFArrayGetCount (scIfaces); ++i)
+        {
+            auto* iface = static_cast<SCNetworkInterfaceRef> (
+                CFArrayGetValueAtIndex (scIfaces, i));
+
+            CFStringRef bsdCF = SCNetworkInterfaceGetBSDName (iface);
+            if (! bsdCF) continue;
+
+            char bsdBuf[64] = {};
+            CFStringGetCString (bsdCF, bsdBuf, sizeof (bsdBuf), kCFStringEncodingUTF8);
+            std::string bsd = bsdBuf;
+
+            if (std::find (upIfaces.begin(), upIfaces.end(), bsd) == upIfaces.end())
+                continue;
+
+            std::string disp = bsd;
+            CFStringRef dispCF = SCNetworkInterfaceGetLocalizedDisplayName (iface);
+            if (dispCF)
+            {
+                char dispBuf[256] = {};
+                CFStringGetCString (dispCF, dispBuf, sizeof (dispBuf), kCFStringEncodingUTF8);
+                if (dispBuf[0] != '\0') disp = dispBuf;
+            }
+
+            result.push_back ({ disp, bsd });
+        }
+
+        CFRelease (scIfaces);
         return result;
     }
 

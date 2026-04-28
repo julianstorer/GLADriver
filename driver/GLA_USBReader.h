@@ -6,7 +6,7 @@
 #include <string>
 #include <syslog.h>
 #include <vector>
-#include "../common/GLA_RingBuffer.h"
+#include "../common/GLA_ResamplingFIFO.h"
 
 struct GLAUSBReader
 {
@@ -24,19 +24,26 @@ struct GLAUSBReader
             return false;
         }
 
-        AudioObjectPropertyAddress bufProp =
+        scratch.resize (4096);
+
+        // Query the USB device's nominal sample rate so the resampling FIFOs can
+        // be configured before the first callback arrives.
+        AudioObjectPropertyAddress rateProp { kAudioDevicePropertyNominalSampleRate,
+                                              kAudioObjectPropertyScopeGlobal,
+                                              kAudioObjectPropertyElementMain };
+        Float64 srcRate = 48000.0;
+        UInt32  rateSz  = sizeof (srcRate);
+        if (AudioObjectGetPropertyData (deviceId, &rateProp, 0, nullptr, &rateSz, &srcRate) != noErr
+                || srcRate <= 0.0)
+            srcRate = 48000.0;
+
+        syslog (LOG_INFO, "GLA: USB device sample rate %.0f Hz", srcRate);
+
         {
-            kAudioDevicePropertyBufferFrameSize,
-            kAudioDevicePropertyScopeInput,
-            kAudioObjectPropertyElementMain
-        };
-
-        UInt32 frameSize = 128;
-        AudioObjectSetPropertyData (deviceId, &bufProp, 0, nullptr, sizeof (frameSize), &frameSize);
-
-        UInt32 sz = sizeof (frameSize);
-        AudioObjectGetPropertyData (deviceId, &bufProp, 0, nullptr, &sz, &frameSize);
-        scratch.resize (frameSize);
+            std::lock_guard<std::mutex> lk (mapMutex);
+            for (auto* fifo : channelBuffers)
+                if (fifo) fifo->setSourceRate (static_cast<double> (srcRate));
+        }
 
         OSStatus err = AudioDeviceCreateIOProcID (deviceId, ioProcStatic, this, &ioProcId);
 
@@ -73,7 +80,7 @@ struct GLAUSBReader
     bool isRunning() const              { return running; }
     AudioDeviceID getDeviceId() const   { return deviceId; }
 
-    void setChannelBuffer (int channelIndex, GLARingBuffer* buf)
+    void setChannelBuffer (int channelIndex, GLAResamplingFIFO* buf)
     {
         std::lock_guard<std::mutex> lk (mapMutex);
         if (channelIndex >= static_cast<int> (channelBuffers.size()))
@@ -129,47 +136,6 @@ private:
         return kAudioDeviceUnknown;
     }
 
-    static AudioDeviceID findDeviceByName (const std::string& nameSubstr)
-    {
-        AudioObjectPropertyAddress prop =
-        {
-            kAudioHardwarePropertyDevices,
-            kAudioObjectPropertyScopeGlobal,
-            kAudioObjectPropertyElementMain
-        };
-
-        UInt32 dataSize = 0;
-        AudioObjectGetPropertyDataSize (kAudioObjectSystemObject, &prop, 0, nullptr, &dataSize);
-
-        UInt32 count = dataSize / sizeof (AudioDeviceID);
-        std::vector<AudioDeviceID> ids (count);
-        AudioObjectGetPropertyData (kAudioObjectSystemObject, &prop, 0, nullptr, &dataSize, ids.data());
-
-        for (auto id : ids)
-        {
-            AudioObjectPropertyAddress nameProp =
-            {
-                kAudioObjectPropertyName,
-                kAudioObjectPropertyScopeGlobal,
-                kAudioObjectPropertyElementMain
-            };
-
-            CFStringRef cfName = nullptr;
-            UInt32 sz = sizeof (cfName);
-
-            if (AudioObjectGetPropertyData (id, &nameProp, 0, nullptr, &sz, &cfName) != noErr)
-                continue;
-
-            char buf[256] = {};
-            CFStringGetCString (cfName, buf, sizeof (buf), kCFStringEncodingUTF8);
-            CFRelease (cfName);
-
-            if (std::string (buf).find (nameSubstr) != std::string::npos)
-                return id;
-        }
-        return kAudioDeviceUnknown;
-    }
-
     static OSStatus ioProcStatic (AudioDeviceID, const AudioTimeStamp*, const AudioBufferList* inputData,
                                   const AudioTimeStamp*, AudioBufferList*, const AudioTimeStamp*, void* clientData)
     {
@@ -198,24 +164,21 @@ private:
                 if (globalCh >= static_cast<int> (buffers.size()))
                     break;
 
-                auto ring = buffers[static_cast<size_t> (globalCh)];
+                auto fifo = buffers[static_cast<size_t> (globalCh)];
 
-                if (!ring)
+                if (!fifo)
                     continue;
 
                 if (channelCount == 1)
                 {
-                    ring->write (src, frames);
+                    fifo->write (src, frames);
                 }
                 else
                 {
-                    if (frames > scratch.size())
-                        continue;
-
                     for (UInt32 f = 0; f < frames; ++f)
                         scratch[f] = src[f * static_cast<UInt32> (channelCount) + static_cast<UInt32> (ch)];
 
-                    ring->write (scratch.data(), frames);
+                    fifo->write (scratch.data(), frames);
                 }
             }
         }
@@ -228,6 +191,6 @@ private:
     bool running = false;
 
     std::mutex mapMutex;
-    std::vector<GLARingBuffer*> channelBuffers;
+    std::vector<GLAResamplingFIFO*> channelBuffers;
     std::vector<float> scratch;
 };

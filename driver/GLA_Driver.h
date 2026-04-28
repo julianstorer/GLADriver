@@ -133,7 +133,7 @@ struct GLADriver  : public aspl::Driver
             {
                 for (const auto& e : entries)
                     usbReader->setChannelBuffer (e.channelIndex,
-                                                 unifiedDevice->getChannelRingBuffer (e.channelIndex));
+                                                 unifiedDevice->getChannelFIFO (e.channelIndex));
 
                 if (! currentBridgeUID.empty())
                 {
@@ -189,7 +189,7 @@ struct GLADriver  : public aspl::Driver
 
             for (const auto& e : entries)
                 usbReader->setChannelBuffer (e.channelIndex,
-                                             unifiedDevice->getChannelRingBuffer (e.channelIndex));
+                                             unifiedDevice->getChannelFIFO (e.channelIndex));
 
             if (! uid.empty())
             {

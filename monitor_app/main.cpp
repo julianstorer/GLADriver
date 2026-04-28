@@ -188,6 +188,7 @@ int main()
                                                  kAudioObjectPropertyScopeInput,
                                                  kAudioObjectPropertyElementMain };
             AudioObjectRemovePropertyListener (deviceId, &cfgProp, streamConfigChanged, nullptr);
+
             deviceId = kAudioDeviceUnknown;
         }
         channelCount = 0;
@@ -210,15 +211,22 @@ int main()
         AudioObjectPropertyAddress cfgProp { kAudioDevicePropertyStreamConfiguration,
                                              kAudioObjectPropertyScopeInput,
                                              kAudioObjectPropertyElementMain };
-        AudioObjectAddPropertyListener (deviceId, &cfgProp, streamConfigChanged, nullptr);
 
         if (AudioDeviceCreateIOProcID (deviceId, ioProcCallback, nullptr, &ioProcId) != noErr)
+        {
+            deviceId = kAudioDeviceUnknown;
             return false;
+        }
+
+        // Register listener only after IOProc succeeds so we never leak it.
+        AudioObjectAddPropertyListener (deviceId, &cfgProp, streamConfigChanged, nullptr);
 
         if (AudioDeviceStart (deviceId, ioProcId) != noErr)
         {
+            AudioObjectRemovePropertyListener (deviceId, &cfgProp, streamConfigChanged, nullptr);
             AudioDeviceDestroyIOProcID (deviceId, ioProcId);
-            ioProcId = nullptr;
+            ioProcId  = nullptr;
+            deviceId  = kAudioDeviceUnknown;
             return false;
         }
         return true;
@@ -258,28 +266,41 @@ int main()
 
         if (gDeviceChanged.exchange (false, std::memory_order_relaxed))
         {
+            // Always disconnect: the AudioDeviceID may have changed even if the
+            // UID-based lookup still finds a device (destroy+recreate on reconfig).
+            disconnect();
+            connected = false;
+            printf ("\033[2J\033[H");
             if (findGLADevice() == kAudioDeviceUnknown)
             {
-                disconnect();
-                connected = false;
-                printf ("\033[2J\033[H");
-                printf ("GLA Monitor — device disconnected, waiting...\n");
+                printf ("GLA Monitor — device removed, waiting...\n");
                 fflush (stdout);
                 usleep (1'000'000);
-                continue;
             }
+            else
+            {
+                printf ("GLA Monitor — device changed, reconnecting...\n");
+                fflush (stdout);
+                usleep (200'000);
+            }
+            continue;
         }
 
         if (gLayoutChanged.exchange (false, std::memory_order_relaxed))
         {
             const int oldCount = channelCount;
             disconnect();
+            connected = false;
             printf ("\033[2J\033[H");
             printf ("GLA Monitor — channel layout changed (was %d ch), reconnecting...\n", oldCount);
             fflush (stdout);
             usleep (200'000);
             continue;
         }
+
+        // Re-read names every frame — cheap CFString calls, catches any rename
+        // regardless of what property notifications the HAL did or didn't send.
+        channelNames = getChannelNames (deviceId, channelCount);
 
         // Redraw all meter rows in-place
         printf ("\033[%d;1H", headerRows + 1);
