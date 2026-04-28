@@ -19,19 +19,21 @@ inline bool glaSendMessage (int fd, const std::vector<uint8_t>& payload)
 {
     uint32_t len = static_cast<uint32_t> (payload.size());
 
-	if (write (fd, &len, 4) != 4)
-		return false;
+    ssize_t hw;
+    do { hw = write (fd, &len, 4); } while (hw < 0 && errno == EINTR);
+    if (hw != 4) return false;
 
     size_t sent = 0;
 
     while (sent < payload.size())
     {
         ssize_t n = write (fd, payload.data() + sent, payload.size() - sent);
+        if (n < 0 && errno == EINTR) continue;
         if (n <= 0) return false;
         sent += static_cast<size_t> (n);
     }
 
-	return true;
+    return true;
 }
 
 // Receive a complete length-prefixed message. Blocks until full message arrives or error.
@@ -107,7 +109,18 @@ inline int glaCreateServer (const std::string& path)
 // Accept a client on a server fd (non-blocking). Returns client fd or -1.
 inline int glaAcceptClient (int serverFd)
 {
-    return accept (serverFd, nullptr, nullptr);
+    int fd = accept (serverFd, nullptr, nullptr);
+
+    if (fd >= 0)
+    {
+        // Default Unix domain socket buffer (8KB) is smaller than a single
+        // 20-channel audio frame (40KB), causing blocking writes. Bump to 256KB.
+        int sz = 256 * 1024;
+        setsockopt (fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof (sz));
+        setsockopt (fd, SOL_SOCKET, SO_RCVBUF, &sz, sizeof (sz));
+    }
+
+    return fd;
 }
 
 // Connect to a UNIX domain socket. Returns fd or -1.
@@ -122,11 +135,15 @@ inline int glaConnect (const std::string& path)
     addr.sun_family = AF_UNIX;
     strncpy (addr.sun_path, path.c_str(), sizeof (addr.sun_path) - 1);
 
-	if (connect (fd, reinterpret_cast<sockaddr*> (&addr), sizeof (addr)) < 0)
+    if (connect (fd, reinterpret_cast<sockaddr*> (&addr), sizeof (addr)) < 0)
     {
         close (fd);
         return -1;
     }
 
-	return fd;
+    int sz = 256 * 1024;
+    setsockopt (fd, SOL_SOCKET, SO_SNDBUF, &sz, sizeof (sz));
+    setsockopt (fd, SOL_SOCKET, SO_RCVBUF, &sz, sizeof (sz));
+
+    return fd;
 }

@@ -12,6 +12,7 @@
 #include <CoreFoundation/CoreFoundation.h>
 #include <juce_events/juce_events.h>
 #include "GLA_IPCServer.h"
+#include "GLA_USBCapture.h"
 #include "../../common/GLA_IPCTypes.h"
 #include "GLA_AVDECCController.h"
 
@@ -32,6 +33,7 @@ public:
 
     //==============================================================================
     // Start IPC server and AVDECC discovery on the given network interface.
+    // USB audio capture is started separately when a bridge is selected.
     // Returns false if the IPC server fails to bind (fatal); AVDECC failure is
     // non-fatal and logged.
     bool start (const std::string& networkInterface)
@@ -58,20 +60,22 @@ public:
                 usbBridgeUID = uid;
             }
             ipc.broadcastUSBBridge (uid);
+            startCapture (uid);
         });
 
         avdecc.setOnChangeCallback ([this]()
         {
             auto entityList = buildEntityList();
-            auto map        = buildChannelMap();
 
             juce::MessageManager::callAsync ([this,
-                                              entityList = std::move (entityList),
-                                              map        = std::move (map)]() mutable
+                                              entityList = std::move (entityList)]() mutable
             {
                 ipc.broadcastEntityList (entityList);
-                ipc.broadcastChannelMap (map);
 
+                // Do NOT broadcastChannelMap here: onEntityList → rebuildPatchbay →
+                // initializeSlots already sends the authoritative channel map once.
+                // A second broadcast here would trigger a redundant stop/restart cycle
+                // on the USB reader in the driver, racing the one from initializeSlots.
                 if (onEntityList)
                     onEntityList (entityList);
             });
@@ -91,6 +95,7 @@ public:
 
     void stop()
     {
+        usbCapture.stop();
         avdecc.stop();
         ipc.stop();
     }
@@ -119,6 +124,13 @@ public:
                 routing[i] = { slots[i].usbChannel, slots[i].entityId, slots[i].displayName };
         }
         auto map = buildChannelMap();
+        syslog (LOG_INFO, "GLA: initializeSlots: broadcasting %zu-slot channel map to %d client(s)",
+                slots.size(), ipc.getConnectedClientCount());
+        for (size_t i = 0; i < map.size(); ++i)
+            syslog (LOG_INFO, "GLA:   slot[%zu] usbCh=%u entityId=0x%llx name='%s'",
+                    i, map[i].channelIndex,
+                    (unsigned long long) map[i].entityId,
+                    map[i].displayName);
         ipc.broadcastChannelMap (map);
         if (onChannelMap) onChannelMap (map);
     }
@@ -170,7 +182,10 @@ public:
             usbBridgeUID  = uid;
             usbBridgeName = name;
         }
+        syslog (LOG_INFO, "GLA: setUSBBridge: broadcasting uid='%s' to %d client(s)",
+                uid.c_str(), ipc.getConnectedClientCount());
         ipc.broadcastUSBBridge (uid);
+        startCapture (uid);
     }
 
     struct USBChannelInfo
@@ -357,13 +372,28 @@ private:
         return list;
     }
 
+    void startCapture (const std::string& uid)
+    {
+        usbCapture.stop();
+
+        if (uid.empty())
+            return;
+
+        usbCapture.start (uid, [this] (uint32_t ch, uint32_t fr, double rate, const float* data)
+        {
+            ipc.sendAudioData (ch, fr, rate, data);
+        });
+    }
+
+    //==============================================================================
     mutable std::mutex mutex;
     std::vector<RoutingEntry> routing;
     std::string usbBridgeUID;
     std::string usbBridgeName;
 
+    GLAUSBCapture    usbCapture;
     AVDECCController avdecc;
-    GLAIPCServer ipc;
+    GLAIPCServer     ipc;
 
     EntityListCallback onEntityList;
     ChannelMapCallback onChannelMap;

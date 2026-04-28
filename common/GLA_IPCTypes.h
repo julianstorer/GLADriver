@@ -22,6 +22,8 @@ enum class GLAMsgType : uint32_t
     StatusResponse      = 20,
     EntityListResponse  = 21,
     RoutingChanged      = 22,
+    // App -> driver: interleaved float32 PCM captured in app process
+    AudioData           = 30,
 };
 
 struct GLAChannelEntry
@@ -73,5 +75,20 @@ inline std::vector<uint8_t> serializeUSBBridge (const std::string& uid)
     memcpy (buf.data(),     &type, 4);
     memcpy (buf.data() + 4, &len,  4);
     memcpy (buf.data() + 8, uid.data(), len);
+    return buf;
+}
+
+// Wire format: [type:u32][channelCount:u32][frameCount:u32][sourceRate:f64][samples:float32[channelCount*frameCount]]
+inline std::vector<uint8_t> serializeAudioData (uint32_t channelCount, uint32_t frameCount,
+                                                 double sourceRate, const float* interleaved)
+{
+    uint32_t type        = static_cast<uint32_t> (GLAMsgType::AudioData);
+    uint32_t sampleCount = channelCount * frameCount;
+    std::vector<uint8_t> buf (20 + sampleCount * sizeof (float));
+    memcpy (buf.data() +  0, &type,         4);
+    memcpy (buf.data() +  4, &channelCount, 4);
+    memcpy (buf.data() +  8, &frameCount,   4);
+    memcpy (buf.data() + 12, &sourceRate,   8);
+    memcpy (buf.data() + 20, interleaved,   sampleCount * sizeof (float));
     return buf;
 }

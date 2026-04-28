@@ -6,6 +6,7 @@
 #include <string>
 #include <syslog.h>
 #include <vector>
+#include "GLA_Log.h"
 #include "../common/GLA_ResamplingFIFO.h"
 
 struct GLAUSBReader
@@ -20,7 +21,7 @@ struct GLAUSBReader
 
         if (deviceId == kAudioDeviceUnknown)
         {
-            syslog (LOG_WARNING, "GLA: USB bridge device '%s' not found", uid.c_str());
+            glaLog (LOG_WARNING, "GLA: USB bridge device '%s' not found", uid.c_str());
             return false;
         }
 
@@ -37,7 +38,35 @@ struct GLAUSBReader
                 || srcRate <= 0.0)
             srcRate = 48000.0;
 
-        syslog (LOG_INFO, "GLA: USB device sample rate %.0f Hz", srcRate);
+        glaLog (LOG_INFO, "GLA: USB device sample rate %.0f Hz", srcRate);
+
+        // Log the virtual stream format (what the IOProc actually receives).
+        AudioObjectPropertyAddress streamsProp { kAudioDevicePropertyStreams,
+                                                  kAudioDevicePropertyScopeInput,
+                                                  kAudioObjectPropertyElementMain };
+        UInt32 streamsSz = 0;
+        if (AudioObjectGetPropertyDataSize (deviceId, &streamsProp, 0, nullptr, &streamsSz) == noErr
+                && streamsSz > 0)
+        {
+            std::vector<AudioStreamID> streamIds (streamsSz / sizeof (AudioStreamID));
+            AudioObjectGetPropertyData (deviceId, &streamsProp, 0, nullptr, &streamsSz, streamIds.data());
+
+            for (size_t si = 0; si < streamIds.size(); ++si)
+            {
+                AudioStreamBasicDescription fmt {};
+                UInt32 fmtSz = sizeof (fmt);
+                AudioObjectPropertyAddress fmtProp { kAudioStreamPropertyVirtualFormat,
+                                                      kAudioObjectPropertyScopeGlobal,
+                                                      kAudioObjectPropertyElementMain };
+                AudioObjectGetPropertyData (streamIds[si], &fmtProp, 0, nullptr, &fmtSz, &fmt);
+                glaLog (LOG_INFO,
+                        "GLA: USB stream[%zu] virtualFmt: rate=%.0f fmt=%u flags=0x%x "
+                        "ch=%u bitsPerCh=%u bytesPerFrame=%u",
+                        si, fmt.mSampleRate, (unsigned) fmt.mFormatID, (unsigned) fmt.mFormatFlags,
+                        (unsigned) fmt.mChannelsPerFrame, (unsigned) fmt.mBitsPerChannel,
+                        (unsigned) fmt.mBytesPerFrame);
+            }
+        }
 
         {
             std::lock_guard<std::mutex> lk (mapMutex);
@@ -49,7 +78,7 @@ struct GLAUSBReader
 
         if (err != noErr)
         {
-            syslog (LOG_ERR, "GLA: AudioDeviceCreateIOProcID failed: %d", (int) err);
+            glaLog (LOG_ERR, "GLA: AudioDeviceCreateIOProcID failed: %d", (int) err);
             return false;
         }
 
@@ -59,12 +88,12 @@ struct GLAUSBReader
         {
             AudioDeviceDestroyIOProcID (deviceId, ioProcId);
             ioProcId = nullptr;
-            syslog (LOG_ERR, "GLA: AudioDeviceStart failed: %d", (int) err);
+            glaLog (LOG_ERR, "GLA: AudioDeviceStart failed: %d", (int) err);
             return false;
         }
 
         running = true;
-        syslog (LOG_INFO, "GLA: USB reader started (deviceId %u)", deviceId);
+        glaLog (LOG_INFO, "GLA: USB reader started (deviceId %u)", deviceId);
         return true;
     }
 
@@ -150,6 +179,10 @@ private:
         auto buffers = channelBuffers;
         mapMutex.unlock();
 
+        const bool doLog = ((++ioProcCallCount % 500) == 0);
+        int wiredFifos = 0;
+        for (auto* f : buffers) if (f) ++wiredFifos;
+
         int globalCh = 0;
 
         for (UInt32 b = 0; b < inputData->mNumberBuffers; ++b)
@@ -183,6 +216,31 @@ private:
             }
         }
 
+        // Accumulate peak magnitude across all processed buffers this cycle.
+        for (UInt32 b = 0; b < inputData->mNumberBuffers; ++b)
+        {
+            const auto& abuf = inputData->mBuffers[b];
+            if (! abuf.mData || abuf.mDataByteSize == 0) continue;
+            const float* src = static_cast<const float*> (abuf.mData);
+            const UInt32 total = abuf.mDataByteSize / sizeof (float);
+            for (UInt32 i = 0; i < total; ++i)
+            {
+                const float v = src[i] < 0 ? -src[i] : src[i];
+                if (v > ioProcPeak) ioProcPeak = v;
+            }
+        }
+
+        if (doLog)
+        {
+            glaLog (LOG_INFO,
+                    "GLA: USBReader IOProc #%llu  bufs=%u  wiredFIFOs=%d/%d  peak=%.6f",
+                    (unsigned long long) ioProcCallCount,
+                    inputData->mNumberBuffers,
+                    wiredFifos, static_cast<int> (buffers.size()),
+                    ioProcPeak);
+            ioProcPeak = 0.0f;
+        }
+
         return noErr;
     }
 
@@ -193,4 +251,6 @@ private:
     std::mutex mapMutex;
     std::vector<GLAResamplingFIFO*> channelBuffers;
     std::vector<float> scratch;
+    uint64_t ioProcCallCount = 0;
+    float    ioProcPeak      = 0.0f;
 };

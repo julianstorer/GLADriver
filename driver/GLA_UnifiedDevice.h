@@ -11,6 +11,7 @@
 #include <vector>
 #include <mach/mach_time.h>
 #include <syslog.h>
+#include "GLA_Log.h"
 #include "../common/GLA_IPCTypes.h"
 #include "../common/GLA_ResamplingFIFO.h"
 
@@ -39,7 +40,7 @@ struct GLAUnifiedDevice  : public aspl::Device
 
     ~GLAUnifiedDevice() override
     {
-        syslog (LOG_INFO, "GLA: destroyed unified device (%zu channels)", entries.size());
+        glaLog (LOG_INFO, "GLA: destroyed unified device (%zu channels)", entries.size());
     }
 
     // Called once before AddDevice, while HasOwner() == false, so all changes
@@ -202,10 +203,14 @@ protected:
         const auto period = static_cast<UInt64> (GetZeroTimeStampPeriod());
         const double ticksPerPeriod = tpf * static_cast<double> (period);
         const UInt64 now = mach_absolute_time();
+        // Advance counter to the current period in one shot — incrementing by 1
+        // per call causes coreaudiod to spin at 100% CPU if many periods have elapsed.
+        const UInt64 elapsed = (now >= anchor) ? (now - anchor) : 0;
+        const UInt64 newCtr  = static_cast<UInt64> (double (elapsed) / ticksPerPeriod);
         UInt64 ctr = periodCounter.load (std::memory_order_relaxed);
 
-        if (now >= anchor + UInt64 (double (ctr + 1) * ticksPerPeriod))
-            periodCounter.store (++ctr, std::memory_order_relaxed);
+        if (newCtr > ctr)
+            periodCounter.store (ctr = newCtr, std::memory_order_relaxed);
 
         *outSampleTime = double (ctr) * static_cast<double> (period);
         *outHostTime   = anchor + UInt64 (double (ctr) * ticksPerPeriod);
@@ -265,9 +270,13 @@ private:
                                 void* bytes,
                                 UInt32 bytesCount) override
         {
+            const bool doLog = ((++callCount % 500) == 0);
+
             if (numChannels == 0 || !rings)
             {
                 std::memset (bytes, 0, bytesCount);
+                if (doLog) glaLog (LOG_INFO, "GLA: OnReadClientInput #%llu  no channels/rings",
+                                   (unsigned long long) callCount);
                 return;
             }
 
@@ -276,21 +285,45 @@ private:
             if (frames > 4096)
             {
                 std::memset (bytes, 0, bytesCount);
+                if (doLog) glaLog (LOG_INFO, "GLA: OnReadClientInput #%llu  frames=%u > 4096, zeroing",
+                                   (unsigned long long) callCount, frames);
                 return;
             }
 
             std::memset (bytes, 0, bytesCount);
             auto out = static_cast<float*> (bytes);
 
+            int ringsWithData = 0;
+
             for (UInt32 ch = 0; ch < numChannels; ++ch)
             {
                 if (ch >= rings->size() || ! (*rings)[ch])
                     continue;
 
+                if ((*rings)[ch]->available() > 0) ++ringsWithData;
+
                 (*rings)[ch]->read (scratch, frames);
 
                 for (UInt32 f = 0; f < frames; ++f)
                     out[f * numChannels + ch] = scratch[f];
+            }
+
+            // Compute peak of the output buffer written this cycle.
+            float cyclePeak = 0.0f;
+            const UInt32 totalSamples = frames * numChannels;
+            for (UInt32 i = 0; i < totalSamples; ++i)
+            {
+                const float v = out[i] < 0 ? -out[i] : out[i];
+                if (v > cyclePeak) cyclePeak = v;
+            }
+            if (cyclePeak > readPeak) readPeak = cyclePeak;
+
+            if (doLog)
+            {
+                glaLog (LOG_INFO,
+                        "GLA: OnReadClientInput #%llu  frames=%u  ch=%u  ringsWithData=%d  peak=%.6f",
+                        (unsigned long long) callCount, frames, numChannels, ringsWithData, readPeak);
+                readPeak = 0.0f;
             }
         }
 
@@ -298,6 +331,8 @@ private:
         UInt32                   numChannels;
         std::shared_ptr<FifoVec> rings;   // shared — outlives the device if an IO cycle is in flight
         float                    scratch[4096];
+        uint64_t                 callCount = 0;
+        float                    readPeak  = 0.0f;
     };
 
     //==============================================================================

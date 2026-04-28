@@ -12,7 +12,18 @@ APP_BUNDLE="$BUILD_DIR/app/gla_app_artefacts/$CONFIG/GLA Injector.app"
 "$SCRIPT_DIR/build-app.sh" "$BUILD_DIR" "$CONFIG"
 
 echo "==> Running $APP_BUNDLE ..."
-log stream --predicate 'process == "GLA Injector"' --level info --style compact &
-LOG_PID=$!
-trap "kill $LOG_PID 2>/dev/null" EXIT
-"$APP_BUNDLE/Contents/MacOS/GLA Injector"
+
+# App logs (syslog from the JUCE app process)
+log stream --predicate 'process == "GLA Injector" AND message CONTAINS "GLA:"' --level info --style compact &
+APP_LOG_PID=$!
+
+# Driver logs (syslog from GLAInjector.driver loaded inside coreaudiod)
+log stream --predicate 'senderImagePath CONTAINS "GLAInjector" AND message CONTAINS "GLA:"' --level info --style compact &
+DRV_LOG_PID=$!
+
+trap "kill $APP_LOG_PID $DRV_LOG_PID 2>/dev/null" EXIT
+# Suppress the la-avdecc watchdog assert: the state machine thread and the bridge
+# completion-handler thread acquire the Manager lock and bridge lock in opposite
+# order on startup, triggering the watchdog in Debug builds. The deadlock resolves
+# itself once initial ADP discovery settles; this just prevents the abort.
+AVDECC_NO_WATCHDOG_ASSERT=1 "$APP_BUNDLE/Contents/MacOS/GLA Injector"

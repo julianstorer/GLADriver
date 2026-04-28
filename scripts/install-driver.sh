@@ -21,6 +21,10 @@ DRIVER_SRC="$BUILD_DIR/output/GLAInjector.driver"
 HAL_DIR="/Library/Audio/Plug-Ins/HAL"
 DRIVER_DST="$HAL_DIR/GLAInjector.driver"
 
+# Predicate that isolates our plugin's syslog calls from all other coreaudiod noise.
+# senderImagePath identifies the dylib that called syslog(), not the process.
+GLA_PRED='senderImagePath CONTAINS "GLAInjector" AND eventMessage CONTAINS "GLA:"'
+
 CLEAN_FLAG=""
 [ $CLEAN -eq 1 ] && CLEAN_FLAG="--clean"
 "$SCRIPT_DIR/build-driver.sh" $CLEAN_FLAG "$BUILD_DIR"
@@ -41,8 +45,9 @@ echo "==> Verifying (waiting up to 15s for driver to initialise)..."
 FOUND=0
 for i in $(seq 1 15); do
     sleep 1
-    if /usr/bin/log show --last "${i}s" --info --predicate 'eventMessage CONTAINS "GLA: driver initialized"' 2>/dev/null \
-            | grep -q "GLA: driver initialized"; then
+    if /usr/bin/log show --last "${i}s" --info \
+            --predicate 'senderImagePath CONTAINS "GLAInjector" AND eventMessage CONTAINS "GLA: driver initialized"' \
+            2>/dev/null | grep -q "GLA: driver initialized"; then
         FOUND=1
         break
     fi
@@ -50,15 +55,15 @@ for i in $(seq 1 15); do
 done
 
 if [ $FOUND -eq 1 ]; then
-    echo "    Driver initialised successfully (no audio devices until app connects)."
+    echo "    Driver initialised successfully."
     echo "Done."
 else
     echo "    ERROR: driver did not initialise after 15s."
     echo "    GLA driver syslog (last 30s):"
-    /usr/bin/log show --last 30s --info --predicate 'eventMessage CONTAINS "GLA:"' 2>/dev/null \
-        | tail -20 || true
-    echo "    coreaudiod errors (last 30s):"
-    /usr/bin/log show --last 30s --info --predicate 'process == "coreaudiod"' 2>/dev/null \
-        | grep -iE "error|fail|unable|invalid|crash" | tail -10 || true
+    /usr/bin/log show --last 30s --info --predicate "$GLA_PRED" 2>/dev/null | tail -20 || true
+    echo "    coreaudiod crashes/errors (last 30s):"
+    /usr/bin/log show --last 30s --info \
+        --predicate 'process == "coreaudiod" AND (eventMessage CONTAINS "error" OR eventMessage CONTAINS "crash" OR eventMessage CONTAINS "fault")' \
+        2>/dev/null | tail -10 || true
     exit 1
 fi

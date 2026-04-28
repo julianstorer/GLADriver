@@ -17,13 +17,16 @@ struct GLAIPCClient
     GLAIPCClient() = default;
     ~GLAIPCClient()  { stop(); }
 
-    using ChannelMapCallback = std::function<void(const std::vector<GLAChannelEntry>&)>;
-    using BridgeCallback     = std::function<void(const std::string&)>;
+    using ChannelMapCallback = std::function<void (const std::vector<GLAChannelEntry>&)>;
+    using BridgeCallback     = std::function<void (const std::string&)>;
+    using AudioDataCallback  = std::function<void (uint32_t channelCount, uint32_t frameCount,
+                                                    double sourceRate, const float* interleaved)>;
 
-    void start (ChannelMapCallback mapCb, BridgeCallback bridgeCb = {})
+    void start (ChannelMapCallback mapCb, BridgeCallback bridgeCb = {}, AudioDataCallback audioCb = {})
     {
-        callback       = std::move (mapCb);
-        bridgeCallback = std::move (bridgeCb);
+        callback          = std::move (mapCb);
+        bridgeCallback    = std::move (bridgeCb);
+        audioDataCallback = std::move (audioCb);
         running = true;
         thread = std::thread ([this] { runLoop(); });
     }
@@ -48,7 +51,8 @@ private:
     std::atomic<bool> running { false };
     std::thread thread;
     ChannelMapCallback callback;
-    BridgeCallback bridgeCallback;
+    BridgeCallback     bridgeCallback;
+    AudioDataCallback  audioDataCallback;
 
     //==============================================================================
     void runLoop()
@@ -77,6 +81,10 @@ private:
                 syslog (LOG_WARNING, "GLA: lost connection to app");
                 close (fd);
                 fd = -1;
+                // Brief pause before reconnecting — prevents a rapid reconnect spiral
+                // that floods the server with RequestConfigurationChange calls and
+                // triggers fd-reuse races in the server's poll loop.
+                std::this_thread::sleep_for (std::chrono::milliseconds (200));
                 continue;
             }
 
@@ -125,6 +133,27 @@ private:
 
             if (bridgeCallback)
                 bridgeCallback (uid);
+        }
+        else if (msgType == GLAMsgType::AudioData)
+        {
+            // [type:4][channelCount:4][frameCount:4][sourceRate:8][samples:4*ch*fr]
+            if (msg.size() < 20)
+                return;
+
+            uint32_t channelCount = 0, frameCount = 0;
+            double   sourceRate   = 48000.0;
+            memcpy (&channelCount, msg.data() +  4, 4);
+            memcpy (&frameCount,   msg.data() +  8, 4);
+            memcpy (&sourceRate,   msg.data() + 12, 8);
+
+            const uint64_t expectedBytes = static_cast<uint64_t> (channelCount) * frameCount * sizeof (float);
+
+            if (msg.size() < 20 + expectedBytes)
+                return;
+
+            if (audioDataCallback)
+                audioDataCallback (channelCount, frameCount, sourceRate,
+                                   reinterpret_cast<const float*> (msg.data() + 20));
         }
     }
 };

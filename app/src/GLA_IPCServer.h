@@ -75,7 +75,11 @@ public:
     {
         auto payload = serializeChannelMapUpdate (entries);
         std::lock_guard<std::mutex> lk (clientsMutex);
-        currentChannelMapMsg = payload;
+        // Only cache non-empty maps: a newly connecting driver should inherit
+        // its own saved state rather than have a transient "no slots yet" empty
+        // map destroy a working device it registered from storage.
+        if (! entries.empty())
+            currentChannelMapMsg = payload;
         std::vector<int> dead;
 
         for (int fd : clients)
@@ -111,6 +115,24 @@ public:
         auto payload = serializeUSBBridge (uid);
         std::lock_guard<std::mutex> lk (clientsMutex);
         currentBridgeUID = uid;
+        std::vector<int> dead;
+
+        for (int fd : clients)
+            if (! glaSendMessage (fd, payload))
+                dead.push_back (fd);
+
+        for (int fd : dead)
+        {
+            close (fd);
+            clients.erase (std::remove (clients.begin(), clients.end(), fd), clients.end());
+        }
+    }
+
+    void sendAudioData (uint32_t channelCount, uint32_t frameCount,
+                        double sourceRate, const float* interleaved)
+    {
+        auto payload = serializeAudioData (channelCount, frameCount, sourceRate, interleaved);
+        std::lock_guard<std::mutex> lk (clientsMutex);
         std::vector<int> dead;
 
         for (int fd : clients)
@@ -169,7 +191,10 @@ private:
                 }
             }
 
-            // Snapshot client list; indices in pfds[1..] match clients at snapshot time.
+            // Snapshot client list. A new client may have been accepted above, but
+            // pfds was built before that accept so it has no slot for the new fd.
+            // Clamp iteration to nPolled to avoid reading past the end of pfds.
+            const size_t nPolled = pfds.size() - 1; // slots for existing clients
             std::vector<int> clientsCopy;
 
             {
@@ -177,7 +202,7 @@ private:
                 clientsCopy = clients;
             }
 
-            for (size_t i = 0; i < clientsCopy.size(); ++i)
+            for (size_t i = 0; i < clientsCopy.size() && i < nPolled; ++i)
             {
                 if (! (pfds[1 + i].revents & POLLIN))
                     continue;

@@ -2,41 +2,40 @@
 
 #include <aspl/Driver.hpp>
 #include <aspl/Plugin.hpp>
-#include <dispatch/dispatch.h>
+#include <atomic>
 #include <memory>
+#include <mutex>
 #include <poll.h>
 #include <syslog.h>
 #include <vector>
 #include "../common/GLA_IPCTypes.h"
 #include "../common/GLA_Socket.h"
+#include "GLA_Log.h"
 #include "GLA_UnifiedDevice.h"
 #include "GLA_IPCClient.h"
-#include "GLA_USBReader.h"
 
 
 //==============================================================================
 struct GLADriver  : public aspl::Driver
 {
     GLADriver() : aspl::Driver(),
-                  usbReader (std::make_shared<GLAUSBReader>()),
                   ipcClient (std::make_shared<GLAIPCClient>())
     {}
 
     ~GLADriver() override
     {
         ipcClient->stop();
-        usbReader->stop();
     }
 
     OSStatus Initialize() override
     {
-        syslog (LOG_INFO, "GLA: Initialize() start");
+        glaLog (LOG_INFO, "GLA: Initialize() start");
 
         OSStatus err = aspl::Driver::Initialize();
 
         if (err != noErr)
         {
-            syslog (LOG_ERR, "GLA: aspl::Driver::Initialize() failed: %d", (int) err);
+            glaLog (LOG_ERR, "GLA: aspl::Driver::Initialize() failed: %d", (int) err);
             return err;
         }
 
@@ -47,7 +46,7 @@ struct GLADriver  : public aspl::Driver
 
         if (map.empty())
         {
-            syslog (LOG_INFO, "GLA: no saved map, attempting sync fetch from app");
+            glaLog (LOG_INFO, "GLA: no saved map, attempting sync fetch from app");
             map = syncFetchChannelMap();
         }
 
@@ -61,10 +60,10 @@ struct GLADriver  : public aspl::Driver
             stub.entityId     = 0;
             strncpy (stub.displayName, "GLA (unconfigured)", sizeof (stub.displayName) - 1);
             map.push_back (stub);
-            syslog (LOG_INFO, "GLA: no channel map available, registering stub device");
+            glaLog (LOG_INFO, "GLA: no channel map available, registering stub device");
         }
 
-        syslog (LOG_INFO, "GLA: applying initial map (%zu channels)", map.size());
+        glaLog (LOG_INFO, "GLA: applying initial map (%zu channels)", map.size());
         applyChannelMap (map);
 
         ipcClient->start (
@@ -73,46 +72,40 @@ struct GLADriver  : public aspl::Driver
                 applyChannelMap (entries);
                 saveChannelMap (entries);
             },
-            [this] (const std::string& uid) { applyUSBBridge (uid); }
+            {},  // bridge UID no longer used by driver; app handles USB capture
+            [this] (uint32_t channelCount, uint32_t frameCount,
+                    double sourceRate, const float* interleaved)
+            {
+                handleAudioData (channelCount, frameCount, sourceRate, interleaved);
+            }
         );
 
-        syslog (LOG_INFO, "GLA: driver initialized");
+        glaLog (LOG_INFO, "GLA: driver initialized");
         return noErr;
-    }
-
-    void applyUSBBridge (const std::string& uid)
-    {
-        syslog (LOG_INFO, "GLA: applyUSBBridge('%s')", uid.c_str());
-        currentBridgeUID = uid;
-
-        if (unifiedDevice)
-        {
-            usbReader->stop();
-            usbReader->start (currentBridgeUID);
-        }
     }
 
     void applyChannelMap (const std::vector<GLAChannelEntry>& entries)
     {
-        syslog (LOG_INFO, "GLA: applyChannelMap(%zu entries)", entries.size());
+        glaLog (LOG_INFO, "GLA: applyChannelMap(%zu entries)", entries.size());
 
         auto plugin = GetPlugin();
 
         // --- Empty map: remove device entirely ---
         if (entries.empty())
         {
-            usbReader->stop();
-
             if (unifiedDevice)
             {
-                syslog (LOG_INFO, "GLA: empty map, removing device");
+                glaLog (LOG_INFO, "GLA: empty map, removing device");
                 plugin->RemoveDevice (unifiedDevice);
-                usbReader->clearChannelBuffers();
+                {
+                    std::lock_guard<std::mutex> lk (fifoMutex_);
+                    channelFifos_.clear();
+                }
                 unifiedDevice.reset();
             }
             else
             {
-                syslog (LOG_INFO, "GLA: empty map, no device to remove");
+                glaLog (LOG_INFO, "GLA: empty map, no device to remove");
             }
 
             return;
@@ -123,39 +116,41 @@ struct GLADriver  : public aspl::Driver
         // --- No existing device: create and register fresh ---
         if (! unifiedDevice)
         {
-            syslog (LOG_INFO, "GLA: creating GLAUnifiedDevice (%zu channels)", entries.size());
+            glaLog (LOG_INFO, "GLA: creating GLAUnifiedDevice (%zu channels)", entries.size());
             unifiedDevice = std::make_shared<GLAUnifiedDevice> (GetContext(), entries);
             if (! isStub) unifiedDevice->init();
             plugin->AddDevice (unifiedDevice);
-            syslog (LOG_INFO, "GLA: AddDevice done");
+            glaLog (LOG_INFO, "GLA: AddDevice done");
 
             if (! isStub)
             {
-                for (const auto& e : entries)
-                    usbReader->setChannelBuffer (e.channelIndex,
-                                                 unifiedDevice->getChannelFIFO (e.channelIndex));
+                std::lock_guard<std::mutex> lk (fifoMutex_);
+                channelFifos_.clear();
 
-                if (! currentBridgeUID.empty())
+                for (const auto& e : entries)
                 {
-                    syslog (LOG_INFO, "GLA: starting USB reader for '%s'", currentBridgeUID.c_str());
-                    usbReader->start (currentBridgeUID);
+                    const uint32_t ch = static_cast<uint32_t> (e.channelIndex);
+
+                    if (ch >= channelFifos_.size())
+                        channelFifos_.resize (ch + 1, nullptr);
+
+                    channelFifos_[ch] = unifiedDevice->getChannelFIFO (e.channelIndex);
                 }
             }
 
-            syslog (LOG_INFO, "GLA: applied channel map (%zu sources)", entries.size());
+            glaLog (LOG_INFO, "GLA: applied channel map (%zu sources)", entries.size());
             return;
         }
 
         // --- Existing device, going to stub: full replace ---
-        // Stubs have no stream and no IO handler; in-place reconfiguration would
-        // require special-casing. Just do a clean remove+add. The stub appears
-        // briefly, so the timing gap is harmless — no client should be streaming.
         if (isStub)
         {
-            syslog (LOG_INFO, "GLA: replacing with stub device");
-            usbReader->stop();
+            glaLog (LOG_INFO, "GLA: replacing with stub device");
             plugin->RemoveDevice (unifiedDevice);
-            usbReader->clearChannelBuffers();
+            {
+                std::lock_guard<std::mutex> lk (fifoMutex_);
+                channelFifos_.clear();
+            }
             unifiedDevice.reset();
 
             unifiedDevice = std::make_shared<GLAUnifiedDevice> (GetContext(), entries);
@@ -176,37 +171,105 @@ struct GLADriver  : public aspl::Driver
         // the lambda runs (stream swap + ring-buffer replacement), then IO resumes.
         // The AudioDeviceID stays constant; clients see kAudioDevicePropertyStreamConfiguration
         // changed and reconnect gracefully.
-        syslog (LOG_INFO, "GLA: reconfiguring unified device in-place (%zu channels)", entries.size());
-        usbReader->stop();
+        glaLog (LOG_INFO, "GLA: reconfiguring unified device in-place (%zu channels)", entries.size());
 
-        std::string uid = currentBridgeUID;
+        const uint32_t thisGen = ++reconfigGeneration;
 
-        unifiedDevice->updateChannelMap (entries, [this, entries, uid]()
+        // Null out FIFO pointers before the reconfigure starts. updateChannelMap
+        // destroys the old rings before calling onRingsReady — without this clear,
+        // handleAudioData could dereference a dangling pointer in that window.
         {
-            // Runs on HAL non-realtime thread inside PerformConfigurationChange.
-            // New rings are live; point the USB reader at them.
-            usbReader->clearChannelBuffers();
+            std::lock_guard<std::mutex> lk (fifoMutex_);
+            channelFifos_.clear();
+        }
 
-            for (const auto& e : entries)
-                usbReader->setChannelBuffer (e.channelIndex,
-                                             unifiedDevice->getChannelFIFO (e.channelIndex));
-
-            if (! uid.empty())
+        unifiedDevice->updateChannelMap (entries, [this, entries, thisGen]()
+        {
+            // If a newer applyChannelMap has already been queued, skip.
+            if (thisGen != reconfigGeneration.load (std::memory_order_relaxed))
             {
-                // Start the USB reader on a separate thread — calling AudioDeviceStart
-                // from inside PerformConfigurationChange is potentially re-entrant
-                // into coreaudiod and must be avoided.
-                dispatch_async (dispatch_get_global_queue (QOS_CLASS_USER_INITIATED, 0), ^{
-                    syslog (LOG_INFO, "GLA: starting USB reader for '%s' after reconfigure", uid.c_str());
-                    usbReader->start (uid);
-                });
+                glaLog (LOG_INFO, "GLA: skipping stale reconfigure (gen %u, now %u)",
+                        thisGen, reconfigGeneration.load());
+                return;
             }
 
-            syslog (LOG_INFO, "GLA: in-place reconfigure complete (%zu sources)", entries.size());
+            // Runs on HAL non-realtime thread inside PerformConfigurationChange.
+            // New rings are live; update the FIFO pointer table.
+            {
+                std::lock_guard<std::mutex> lk (fifoMutex_);
+                channelFifos_.clear();
+
+                for (const auto& e : entries)
+                {
+                    const uint32_t ch = static_cast<uint32_t> (e.channelIndex);
+
+                    if (ch >= channelFifos_.size())
+                        channelFifos_.resize (ch + 1, nullptr);
+
+                    channelFifos_[ch] = unifiedDevice->getChannelFIFO (e.channelIndex);
+                }
+            }
+
+            glaLog (LOG_INFO, "GLA: in-place reconfigure complete (%zu sources)", entries.size());
         });
     }
 
 private:
+    //==============================================================================
+    void handleAudioData (uint32_t channelCount, uint32_t frameCount,
+                          double sourceRate, const float* interleaved)
+    {
+        const bool doLog = ((++audioDataCallCount_ % 500) == 0);
+
+        // Compute peak for diagnostics.
+        float peak = 0.0f;
+
+        if (doLog)
+        {
+            const uint32_t total = channelCount * frameCount;
+
+            for (uint32_t i = 0; i < total; ++i)
+            {
+                const float v = interleaved[i] < 0 ? -interleaved[i] : interleaved[i];
+                if (v > peak) peak = v;
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lk (fifoMutex_);
+
+            // Only call setSourceRate when the rate actually changes — it calls
+            // ring_.reset() which wipes the buffer, so calling it every frame
+            // guarantees the ring is always empty when the HAL reads it.
+            if (sourceRate != lastAudioSourceRate_)
+            {
+                lastAudioSourceRate_ = sourceRate;
+
+                for (auto* fifo : channelFifos_)
+                    if (fifo) fifo->setSourceRate (sourceRate);
+            }
+
+            if (audioScratch_.size() < frameCount)
+                audioScratch_.resize (frameCount);
+
+            for (uint32_t ch = 0; ch < channelCount; ++ch)
+            {
+                if (ch >= channelFifos_.size() || ! channelFifos_[ch])
+                    continue;
+
+                for (uint32_t f = 0; f < frameCount; ++f)
+                    audioScratch_[f] = interleaved[f * channelCount + ch];
+
+                channelFifos_[ch]->write (audioScratch_.data(), frameCount);
+            }
+        }
+
+        if (doLog)
+            glaLog (LOG_INFO,
+                    "GLA: AudioData #%llu  ch=%u  frames=%u  peak=%.6f",
+                    (unsigned long long) audioDataCallCount_, channelCount, frameCount, peak);
+    }
+
     //==============================================================================
     std::vector<GLAChannelEntry> loadSavedChannelMap()
     {
@@ -223,7 +286,7 @@ private:
 
         std::vector<GLAChannelEntry> entries (count);
         memcpy (entries.data(), bytes.data() + 4, count * sizeof (GLAChannelEntry));
-        syslog (LOG_INFO, "GLA: loaded %u channels from storage", count);
+        glaLog (LOG_INFO, "GLA: loaded %u channels from storage", count);
         return entries;
     }
 
@@ -269,7 +332,7 @@ private:
                     {
                         result.resize (count);
                         memcpy (result.data(), msg.data() + 8, count * sizeof (GLAChannelEntry));
-                        syslog (LOG_INFO, "GLA: sync fetch got %u channels", count);
+                        glaLog (LOG_INFO, "GLA: sync fetch got %u channels", count);
                     }
                 }
             }
@@ -280,8 +343,15 @@ private:
     }
 
     //==============================================================================
-    std::string currentBridgeUID;
-    std::shared_ptr<GLAUSBReader> usbReader;
+    std::atomic<uint32_t>        reconfigGeneration { 0 };
     std::shared_ptr<GLAIPCClient> ipcClient;
     std::shared_ptr<GLAUnifiedDevice> unifiedDevice;
+
+    // Audio data path: written by IPC thread, pointers updated by HAL non-realtime thread.
+    std::mutex                     fifoMutex_;
+    std::vector<GLAResamplingFIFO*> channelFifos_;
+    std::vector<float>             audioScratch_;
+
+    uint64_t audioDataCallCount_  = 0;
+    double   lastAudioSourceRate_ = 0.0;
 };
