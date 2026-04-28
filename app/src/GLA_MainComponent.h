@@ -3,6 +3,7 @@
 
 #include <juce_gui_basics/juce_gui_basics.h>
 #include <algorithm>
+#include <tuple>
 #include <vector>
 #include <CoreAudio/CoreAudio.h>
 #include <CoreFoundation/CoreFoundation.h>
@@ -29,11 +30,14 @@ public:
         addAndMakeVisible (comboNetif);
         addAndMakeVisible (labelBridge);
         addAndMakeVisible (comboBridge);
+        addAndMakeVisible (labelListener);
+        addAndMakeVisible (comboListener);
         addAndMakeVisible (labelStatus);
         addAndMakeVisible (labelDriver);
 
         comboNetif.addListener (this);
         comboBridge.addListener (this);
+        comboListener.addListener (this);
 
         refreshNetworkInterfaces();
 
@@ -79,6 +83,9 @@ public:
         area.removeFromTop (4);
         labelBridge.setBounds (area.removeFromTop (20));
         comboBridge.setBounds (area.removeFromTop (rowHeight));
+        area.removeFromTop (4);
+        labelListener.setBounds (area.removeFromTop (20));
+        comboListener.setBounds (area.removeFromTop (rowHeight));
         area.removeFromTop (8);
         labelStatus.setBounds (area.removeFromTop (20));
         area.removeFromTop (4);
@@ -106,32 +113,55 @@ public:
         {
             int idx = comboBridge.getSelectedId() - 1;
             if (idx >= 0 && idx < static_cast<int> (bridgeUIDs.size()))
-                backend.setUSBBridge (bridgeUIDs[static_cast<size_t> (idx)]);
+            {
+                bridgeChannelCount = bridgeChannelCounts[static_cast<size_t> (idx)];
+                backend.setUSBBridge (bridgeUIDs[static_cast<size_t> (idx)],
+                                      bridgeNames[static_cast<size_t> (idx)]);
+                refreshBridgeStreamInfo();
+                rebuildPatchbay();
+            }
+        }
+        else if (box == &comboListener)
+        {
+            int idx = comboListener.getSelectedId() - 1;
+            if (idx >= 0 && idx < static_cast<int> (listenerEntityIds.size()))
+                bridgeListenerEntityId = listenerEntityIds[static_cast<size_t> (idx)];
+            else
+                bridgeListenerEntityId = 0;
+            refreshBridgeStreamInfo();
+            rebuildPatchbay();
         }
         else
         {
-            // It's a patchbay row combo.
-            for (int ch = 0; ch < static_cast<int> (patchRows.size()); ++ch)
+            // It's a patchbay row combo. Item IDs encode USB channel: id = usbCh + 1.
+            for (int row = 0; row < static_cast<int> (patchRows.size()); ++row)
             {
-                if (patchRows[static_cast<size_t> (ch)].combo.get() == box)
-                {
-                    // usbChannel is the actual channelIndex this row represents,
-                    // kept in sync by syncCombosToMap().
-                    const int usbCh   = patchRows[static_cast<size_t> (ch)].usbChannel;
-                    const int selId   = box->getSelectedId();
+                auto& patchRow = patchRows[static_cast<size_t> (row)];
+                if (patchRow.combo.get() != box) continue;
 
-                    if (selId == 1000)
-                    {
-                        backend.setRouting (static_cast<uint8_t> (usbCh), 0);
-                    }
-                    else if (selId > 0 &&
-                             static_cast<size_t> (selId - 1) < entities.size())
-                    {
-                        auto eid = entities[static_cast<size_t> (selId - 1)].entityId;
-                        backend.setRouting (static_cast<uint8_t> (usbCh), eid);
-                    }
-                    break;
+                const int selId = box->getSelectedId();
+
+                if (selId == 1000) // "(none)" — unassign this virtual output slot
+                {
+                    backend.clearSlot (row);
+                    patchRow.usbChannel = -1;
                 }
+                else if (selId > 0) // USB channel selected; id = usbCh + 1
+                {
+                    int newUsbCh = selId - 1;
+                    patchRow.usbChannel = newUsbCh;
+
+                    std::string sourceName;
+                    uint64_t    talkerEid = 0;
+                    if (newUsbCh < static_cast<int> (usbChannelInfos.size()))
+                    {
+                        sourceName = usbChannelInfos[static_cast<size_t> (newUsbCh)].sourceName;
+                        talkerEid  = usbChannelInfos[static_cast<size_t> (newUsbCh)].talkerEntityId;
+                    }
+
+                    backend.setSlot (row, static_cast<uint8_t> (newUsbCh), talkerEid, sourceName);
+                }
+                break;
             }
         }
     }
@@ -143,11 +173,15 @@ public:
         int current = comboBridge.getSelectedId();
         comboBridge.clear (juce::dontSendNotification);
         bridgeUIDs.clear();
+        bridgeNames.clear();
+        bridgeChannelCounts.clear();
 
         for (int i = 0; i < static_cast<int> (devices.size()); ++i)
         {
-            bridgeUIDs.push_back (devices[static_cast<size_t> (i)].second);
-            comboBridge.addItem (devices[static_cast<size_t> (i)].first, i + 1);
+            bridgeNames.push_back (std::get<0> (devices[static_cast<size_t> (i)]));
+            bridgeUIDs.push_back (std::get<1> (devices[static_cast<size_t> (i)]));
+            bridgeChannelCounts.push_back (std::get<2> (devices[static_cast<size_t> (i)]));
+            comboBridge.addItem (std::get<0> (devices[static_cast<size_t> (i)]), i + 1);
         }
 
         comboBridge.setSelectedId (current, juce::dontSendNotification);
@@ -178,11 +212,36 @@ private:
         comboNetif.setSelectedId (current > 0 ? current : 1, juce::dontSendNotification);
     }
 
+    void refreshBridgeStreamInfo()
+    {
+        usbChannelInfos = backend.getUSBChannelInfos (bridgeChannelCount, bridgeListenerEntityId);
+    }
+
     void onEntityListReceived (const std::vector<GLAEntityInfo>& newEntities)
     {
         entities = newEntities;
         labelStatus.setText (juce::String (static_cast<int> (newEntities.size())) +
                             " entities on network", juce::dontSendNotification);
+
+        // Rebuild listener combo, preserving the current selection by entity ID.
+        int prevSel = comboListener.getSelectedId();
+        comboListener.clear (juce::dontSendNotification);
+        listenerEntityIds.clear();
+        comboListener.addItem ("(none)", 1);
+        listenerEntityIds.push_back (0);
+        for (int i = 0; i < static_cast<int> (newEntities.size()); ++i)
+        {
+            comboListener.addItem (juce::String (newEntities[static_cast<size_t> (i)].name), i + 2);
+            listenerEntityIds.push_back (newEntities[static_cast<size_t> (i)].entityId);
+        }
+
+        // Restore selection if the same entity is still present
+        if (prevSel > 1)
+            comboListener.setSelectedId (prevSel, juce::dontSendNotification);
+        else
+            comboListener.setSelectedId (1, juce::dontSendNotification);
+
+        refreshBridgeStreamInfo();
         rebuildPatchbay();
     }
 
@@ -194,42 +253,21 @@ private:
 
     void syncCombosToMap()
     {
-        // Reset all rows to "(none)"
-        for (auto& row : patchRows)
-            row.combo->setSelectedId (1000, juce::dontSendNotification);
-
-        // Sort active entries by channelIndex so display order is stable
-        auto sorted = channelMap;
-        std::sort (sorted.begin(), sorted.end(), [] (const GLAChannelEntry& a, const GLAChannelEntry& b)
+        // channelMap[i] is slot i. channelIndex==0xFF means unassigned.
+        for (int i = 0; i < static_cast<int> (patchRows.size()); ++i)
         {
-            return a.channelIndex < b.channelIndex;
-        });
-
-        // Compute first fresh channelIndex for empty rows (one past the highest active)
-        int nextFresh = 0;
-        for (auto const& e : sorted)
-            nextFresh = std::max (nextFresh, static_cast<int> (e.channelIndex) + 1);
-
-        // Assign active entries to consecutive rows with no gaps
-        for (size_t r = 0; r < patchRows.size(); ++r)
-        {
-            if (r < sorted.size())
+            auto& row = patchRows[static_cast<size_t> (i)];
+            if (i >= static_cast<int> (channelMap.size())
+                || channelMap[static_cast<size_t> (i)].channelIndex == 0xFF)
             {
-                patchRows[r].usbChannel = sorted[r].channelIndex;
-
-                for (int i = 0; i < static_cast<int> (entities.size()); ++i)
-                {
-                    if (entities[static_cast<size_t> (i)].entityId == sorted[r].entityId)
-                    {
-                        patchRows[r].combo->setSelectedId (i + 1, juce::dontSendNotification);
-                        break;
-                    }
-                }
+                row.usbChannel = -1;
+                row.combo->setSelectedId (1000, juce::dontSendNotification);
             }
             else
             {
-                // Empty rows get fresh channelIndex values so new selections append cleanly
-                patchRows[r].usbChannel = nextFresh + static_cast<int> (r - sorted.size());
+                int usbCh = static_cast<int> (channelMap[static_cast<size_t> (i)].channelIndex);
+                row.usbChannel = usbCh;
+                row.combo->setSelectedId (usbCh + 1, juce::dontSendNotification);
             }
         }
     }
@@ -241,26 +279,37 @@ private:
             removeChildComponent (row.label.get());
             removeChildComponent (row.combo.get());
         }
-
         patchRows.clear();
 
-        int rowCount = (bridgeChannelCount > 0) ? bridgeChannelCount : 8;
+        int rowCount = usbChannelInfos.empty()
+                       ? bridgeChannelCount
+                       : static_cast<int> (usbChannelInfos.size());
         rowCount = std::min (rowCount, maxBridgeChannels);
+
+        // Reset backend to a clean fixed-size slot table, then set 1:1 defaults.
+        backend.resetSlots (rowCount);
 
         for (int ch = 0; ch < rowCount; ++ch)
         {
+            // Default 1:1: slot ch → USB channel ch
+            if (ch < static_cast<int> (usbChannelInfos.size()))
+            {
+                auto const& info = usbChannelInfos[static_cast<size_t> (ch)];
+                backend.setSlot (ch, static_cast<uint8_t> (ch), info.talkerEntityId, info.sourceName);
+            }
+
             PatchRow row;
-            row.usbChannel = ch;
+            row.usbChannel = (ch < static_cast<int> (usbChannelInfos.size())) ? ch : -1;
             row.label = std::make_unique<juce::Label> ("", "Ch " + juce::String (ch + 1));
             row.combo = std::make_unique<juce::ComboBox>();
             row.combo->addItem ("(none)", 1000);
 
-            for (int i = 0; i < static_cast<int> (entities.size()); ++i)
+            for (auto const& info : usbChannelInfos)
             {
-                auto& ent = entities[static_cast<size_t> (i)];
-                juce::String name = ent.name;
-                if (!ent.online) name = "[offline] " + name;
-                row.combo->addItem (name, i + 1);
+                juce::String label = "Channel " + juce::String (info.channelIndex + 1);
+                label += info.sourceName.empty() ? " - no source"
+                                                 : " - " + juce::String (info.sourceName);
+                row.combo->addItem (label, info.channelIndex + 1);
             }
 
             row.combo->addListener (this);
@@ -276,12 +325,14 @@ private:
     //==============================================================================
     AppBackend backend;
 
-    juce::Label    labelNetif  { "", "Network Interface:" };
+    juce::Label    labelNetif    { "", "Network Interface:" };
     juce::ComboBox comboNetif;
-    juce::Label    labelBridge { "", "USB Bridge:" };
+    juce::Label    labelBridge  { "", "USB Bridge (CoreAudio):" };
     juce::ComboBox comboBridge;
-    juce::Label    labelStatus { "", "Status: starting..." };
-    juce::Label    labelDriver { "", "Driver: checking..." };
+    juce::Label    labelListener { "", "AVDECC Listener (bridge entity):" };
+    juce::ComboBox comboListener;
+    juce::Label    labelStatus  { "", "Status: starting..." };
+    juce::Label    labelDriver  { "", "Driver: checking..." };
 
     // Patchbay: one row per USB channel slot.
     struct PatchRow
@@ -294,15 +345,21 @@ private:
     std::vector<PatchRow> patchRows;
     std::vector<GLAEntityInfo> entities;
     std::vector<GLAChannelEntry> channelMap;
+    std::vector<AppBackend::USBChannelInfo> usbChannelInfos;
 
-    int bridgeChannelCount = 0;
+    int      bridgeChannelCount    = 0;
+    uint64_t bridgeListenerEntityId = 0;
 
-    std::vector<std::string> netifBSDNames;
-    std::vector<std::string> bridgeUIDs;
+    std::vector<std::string>  netifBSDNames;
+    std::vector<std::string>  bridgeUIDs;
+    std::vector<std::string>  bridgeNames;
+    std::vector<int>          bridgeChannelCounts;
+    std::vector<uint64_t>     listenerEntityIds;
 
     //==============================================================================
     // Enumerate CoreAudio input devices (potential USB bridges).
-    static std::vector<std::pair<std::string, std::string>> getAudioInputDevices()
+    // Returns {name, uid, inputChannelCount} tuples.
+    static std::vector<std::tuple<std::string, std::string, int>> getAudioInputDevices()
     {
         AudioObjectPropertyAddress prop =
         {
@@ -316,7 +373,7 @@ private:
         std::vector<AudioDeviceID> ids (dataSize / sizeof (AudioDeviceID));
         AudioObjectGetPropertyData (kAudioObjectSystemObject, &prop, 0, nullptr, &dataSize, ids.data());
 
-        std::vector<std::pair<std::string, std::string>> result; // {name, uid}
+        std::vector<std::tuple<std::string, std::string, int>> result; // {name, uid, channels}
 
         for (auto id : ids)
         {
@@ -368,7 +425,7 @@ private:
             if (uid == kGLADriverUID)
                 continue;
 
-            result.push_back ({ getStr (kAudioObjectPropertyName), uid });
+            result.emplace_back (getStr (kAudioObjectPropertyName), uid, channels);
         }
 
         return result;

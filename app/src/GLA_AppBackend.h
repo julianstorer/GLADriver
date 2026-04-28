@@ -38,36 +38,11 @@ public:
     {
         ipc.setSetRoutingCallback ([this] (uint8_t ch, uint64_t eid)
         {
-            std::string name = "Unknown";
-
+            // Remote routing: ch is both slot index and USB channel (1:1 mapping assumed)
+            std::string name;
             for (auto const& r : avdecc.getEntities())
-            {
-                if (r.id == eid)
-                {
-                    name = r.name;
-                    break;
-                }
-            }
-
-            {
-                std::lock_guard<std::mutex> lk (mutex);
-                bool found = false;
-
-                for (auto& r : routing)
-                {
-                    if (r.channelIndex == ch)
-                    {
-                        r.entityId = eid; r.displayName = name;
-                        found = true;
-                        break;
-                    }
-                }
-
-                if (! found)
-                    routing.push_back ({ ch, eid, name });
-            }
-
-            ipc.broadcastChannelMap (buildChannelMap());
+                if (r.id == eid) { name = r.name; break; }
+            setSlot (static_cast<int> (ch), ch, eid, name);
         });
 
         ipc.setSetNetifCallback ([this] (const std::string& iface)
@@ -126,57 +101,132 @@ public:
         avdecc.start (iface);
     }
 
-    void setRouting (uint8_t channelIndex, uint64_t entityId)
+    // Resize routing to n slots, all unassigned (channelIndex=0xFF = silence).
+    // Call whenever the bridge or listener changes.
+    void resetSlots (int n)
     {
         {
             std::lock_guard<std::mutex> lk (mutex);
-
-            if (entityId == 0)
-            {
-                routing.erase (std::remove_if (routing.begin(), routing.end(),
-                                               [channelIndex] (const RoutingEntry& r) {
-                                                   return r.channelIndex == channelIndex;
-                                               }),
-                               routing.end());
-            }
-            else
-            {
-                std::string name;
-                for (auto const& r : avdecc.getEntities())
-                {
-                    if (r.id == entityId) { name = r.name; break; }
-                }
-
-                bool found = false;
-                for (auto& r : routing)
-                {
-                    if (r.channelIndex == channelIndex)
-                    {
-                        r.entityId = entityId;
-                        r.displayName = name;
-                        found = true;
-                        break;
-                    }
-                }
-
-                if (! found)
-                    routing.push_back ({ channelIndex, entityId, name });
-            }
+            routing.assign (static_cast<size_t> (std::max (0, n)),
+                            RoutingEntry { 0xFF, 0, "" });
         }
-
         auto map = buildChannelMap();
         ipc.broadcastChannelMap (map);
         if (onChannelMap) onChannelMap (map);
     }
 
-    void setUSBBridge (const std::string& uid)
+    // Assign USB input channel usbChannel to virtual output slot slot.
+    void setSlot (int slot, uint8_t usbChannel, uint64_t entityId, const std::string& displayName)
     {
         {
             std::lock_guard<std::mutex> lk (mutex);
-            usbBridgeUID = uid;
+            if (slot < 0 || slot >= static_cast<int> (routing.size())) return;
+            routing[static_cast<size_t> (slot)] = { usbChannel, entityId, displayName };
+        }
+        auto map = buildChannelMap();
+        ipc.broadcastChannelMap (map);
+        if (onChannelMap) onChannelMap (map);
+    }
+
+    // Unassign virtual output slot slot (outputs silence; slot still exists in driver).
+    void clearSlot (int slot)
+    {
+        {
+            std::lock_guard<std::mutex> lk (mutex);
+            if (slot < 0 || slot >= static_cast<int> (routing.size())) return;
+            routing[static_cast<size_t> (slot)] = { 0xFF, 0, "" };
+        }
+        auto map = buildChannelMap();
+        ipc.broadcastChannelMap (map);
+        if (onChannelMap) onChannelMap (map);
+    }
+
+    void setUSBBridge (const std::string& uid, const std::string& name = "")
+    {
+        {
+            std::lock_guard<std::mutex> lk (mutex);
+            usbBridgeUID  = uid;
+            usbBridgeName = name;
         }
         ipc.broadcastUSBBridge (uid);
     }
+
+    struct USBChannelInfo
+    {
+        uint8_t     channelIndex;
+        uint64_t    talkerEntityId; // 0 = no AVDECC source
+        std::string sourceName;     // empty if no source
+    };
+
+    // Returns one entry per USB input channel (0-based, count = totalChannels),
+    // annotated with the AVDECC talker name feeding each channel (if any).
+    // bridgeEntityId must be provided by the caller (selected by the user in the UI).
+    std::vector<USBChannelInfo> getUSBChannelInfos (int totalChannels, uint64_t bridgeEntityId) const
+    {
+        std::vector<USBChannelInfo> result;
+        if (totalChannels <= 0) return result;
+
+        syslog (LOG_INFO, "GLA: getUSBChannelInfos: CoreAudio channels=%d entityId=0x%llx",
+                totalChannels, (unsigned long long) bridgeEntityId);
+
+        if (bridgeEntityId == 0)
+        {
+            // No AVDECC entity selected — show CoreAudio channels with no source info
+            result.resize (static_cast<size_t> (totalChannels));
+            for (int i = 0; i < totalChannels; ++i)
+            {
+                result[static_cast<size_t> (i)].channelIndex   = static_cast<uint8_t> (i);
+                result[static_cast<size_t> (i)].talkerEntityId = 0;
+                result[static_cast<size_t> (i)].sourceName     = "";
+            }
+            syslog (LOG_INFO, "GLA:   no AVDECC entity, showing %d CoreAudio channels", totalChannels);
+            return result;
+        }
+
+        auto streamConns = avdecc.getListenerConnections (bridgeEntityId);
+        int streamCount  = static_cast<int> (streamConns.size());
+        syslog (LOG_INFO, "GLA:   AVDECC stream inputs=%d", streamCount);
+
+        if (streamCount == 0)
+        {
+            // Entity found but no stream inputs — fall back to CoreAudio count
+            result.resize (static_cast<size_t> (totalChannels));
+            for (int i = 0; i < totalChannels; ++i)
+            {
+                result[static_cast<size_t> (i)].channelIndex   = static_cast<uint8_t> (i);
+                result[static_cast<size_t> (i)].talkerEntityId = 0;
+                result[static_cast<size_t> (i)].sourceName     = "";
+            }
+            syslog (LOG_WARNING, "GLA:   entity has no stream inputs, falling back to CoreAudio channels=%d", totalChannels);
+            return result;
+        }
+
+        auto entities = avdecc.getEntities();
+        int channelIndex = 0;
+
+        for (auto const& sc : streamConns)
+        {
+            std::string sourceName;
+            for (auto const& e : entities)
+                if (e.id == sc.talkerEntityId) { sourceName = e.name; break; }
+
+            syslog (LOG_INFO, "GLA:   stream[%d] talker=0x%llx channels=%d source='%s'",
+                    sc.streamIndex, (unsigned long long) sc.talkerEntityId, sc.channelCount, sourceName.c_str());
+
+            for (int ch = 0; ch < sc.channelCount; ++ch)
+            {
+                USBChannelInfo info;
+                info.channelIndex   = static_cast<uint8_t> (channelIndex++);
+                info.talkerEntityId = sc.talkerEntityId;
+                info.sourceName     = sourceName;
+                result.push_back (info);
+            }
+        }
+
+        syslog (LOG_INFO, "GLA:   total AVDECC-derived channels=%d", channelIndex);
+        return result;
+    }
+
 
     // Callbacks are delivered on the JUCE message thread.
     void setEntityListCallback (EntityListCallback cb)   { onEntityList = std::move (cb); }
@@ -288,6 +338,7 @@ private:
     mutable std::mutex mutex;
     std::vector<RoutingEntry> routing;
     std::string usbBridgeUID;
+    std::string usbBridgeName;
 
     AVDECCController avdecc;
     GLAIPCServer ipc;
