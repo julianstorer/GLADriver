@@ -239,8 +239,6 @@ private:
             return;
         }
 
-        ++audioDataCallCount_;
-
         {
             std::lock_guard<std::mutex> lk (fifoMutex_);
 
@@ -362,6 +360,5 @@ private:
     std::vector<GLAResamplingFIFO*> slotFifos_;
     std::vector<float>              audioScratch_;
 
-    uint64_t audioDataCallCount_  = 0;
     double   lastAudioSourceRate_ = 0.0;
 };

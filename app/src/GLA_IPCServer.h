@@ -80,34 +80,14 @@ public:
         // map destroy a working device it registered from storage.
         if (! entries.empty())
             currentChannelMapMsg = payload;
-        std::vector<int> dead;
-
-        for (int fd : clients)
-            if (! glaSendMessage (fd, payload))
-                dead.push_back (fd);
-
-        for (int fd : dead)
-        {
-            close (fd);
-            clients.erase (std::remove (clients.begin(), clients.end(), fd), clients.end());
-        }
+        sendToClients (payload);
     }
 
     void broadcastEntityList (const std::vector<GLAEntityInfo>& entities)
     {
         auto payload = serializeEntityList (entities);
         std::lock_guard<std::mutex> lk (clientsMutex);
-        std::vector<int> dead;
-
-        for (int fd : clients)
-            if (! glaSendMessage (fd, payload))
-                dead.push_back (fd);
-
-        for (int fd : dead)
-        {
-            close (fd);
-            clients.erase (std::remove (clients.begin(), clients.end(), fd), clients.end());
-        }
+        sendToClients (payload);
     }
 
     void broadcastUSBBridge (const std::string& uid)
@@ -115,17 +95,7 @@ public:
         auto payload = serializeUSBBridge (uid);
         std::lock_guard<std::mutex> lk (clientsMutex);
         currentBridgeUID = uid;
-        std::vector<int> dead;
-
-        for (int fd : clients)
-            if (! glaSendMessage (fd, payload))
-                dead.push_back (fd);
-
-        for (int fd : dead)
-        {
-            close (fd);
-            clients.erase (std::remove (clients.begin(), clients.end(), fd), clients.end());
-        }
+        sendToClients (payload);
     }
 
     void sendAudioData (uint32_t channelCount, uint32_t frameCount,
@@ -133,17 +103,7 @@ public:
     {
         auto payload = serializeAudioData (channelCount, frameCount, sourceRate, interleaved);
         std::lock_guard<std::mutex> lk (clientsMutex);
-        std::vector<int> dead;
-
-        for (int fd : clients)
-            if (! glaSendMessage (fd, payload))
-                dead.push_back (fd);
-
-        for (int fd : dead)
-        {
-            close (fd);
-            clients.erase (std::remove (clients.begin(), clients.end(), fd), clients.end());
-        }
+        sendToClients (payload);
     }
 
     int getConnectedClientCount()
@@ -154,6 +114,22 @@ public:
 
 private:
     //==============================================================================
+    // Caller must hold clientsMutex.
+    void sendToClients (const std::vector<uint8_t>& payload)
+    {
+        std::vector<int> dead;
+
+        for (int fd : clients)
+            if (! glaSendMessage (fd, payload))
+                dead.push_back (fd);
+
+        for (int fd : dead)
+        {
+            close (fd);
+            clients.erase (std::remove (clients.begin(), clients.end(), fd), clients.end());
+        }
+    }
+
     void runLoop()
     {
         while (running)

@@ -284,8 +284,6 @@ private:
                                 void* bytes,
                                 UInt32 bytesCount) override
         {
-            ++callCount;
-
             if (numChannels == 0 || !rings)
             {
                 std::memset (bytes, 0, bytesCount);
@@ -319,7 +317,6 @@ private:
         UInt32                   numChannels;
         std::shared_ptr<FifoVec> rings;   // shared — outlives the device if an IO cycle is in flight
         float                    scratch[4096];
-        uint64_t                 callCount = 0;
     };
 
     //==============================================================================
