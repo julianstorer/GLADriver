@@ -14,6 +14,7 @@
 #include "GLA_IPCServer.h"
 #include "GLA_USBCapture.h"
 #include "../../common/GLA_IPCTypes.h"
+#include "../../common/GLA_ChannelMatrix.h"
 #include "GLA_AVDECCController.h"
 
 static constexpr const char* kGLADriverUID = "com.greenlight.gla-injector.unified";
@@ -25,8 +26,15 @@ static constexpr const char* kGLADriverUID = "com.greenlight.gla-injector.unifie
 class AppBackend
 {
 public:
+    struct SlotConfig
+    {
+        uint8_t     usbChannel  { 0xFF };
+        uint64_t    entityId    { 0 };
+        std::string displayName;
+    };
+
     using EntityListCallback = std::function<void (const std::vector<GLAEntityInfo>&)>;
-    using ChannelMapCallback = std::function<void (const std::vector<GLAChannelEntry>&)>;
+    using ChannelMapCallback = std::function<void (const std::vector<SlotConfig>&)>;
 
     AppBackend() = default;
     ~AppBackend() { stop(); }
@@ -106,13 +114,6 @@ public:
         avdecc.start (iface);
     }
 
-    struct SlotConfig
-    {
-        uint8_t     usbChannel  { 0xFF };
-        uint64_t    entityId    { 0 };
-        std::string displayName;
-    };
-
     // Atomically set the full slot table and broadcast once.
     // Use this instead of resetSlots + N×setSlot to avoid N+1 driver reconfigurations.
     void initializeSlots (const std::vector<SlotConfig>& slots)
@@ -122,31 +123,32 @@ public:
             routing.resize (slots.size());
             for (size_t i = 0; i < slots.size(); ++i)
                 routing[i] = { slots[i].usbChannel, slots[i].entityId, slots[i].displayName };
+            rebuildMatrix();
         }
         auto map = buildChannelMap();
         syslog (LOG_INFO, "GLA: initializeSlots: broadcasting %zu-slot channel map to %d client(s)",
                 slots.size(), ipc.getConnectedClientCount());
         for (size_t i = 0; i < map.size(); ++i)
-            syslog (LOG_INFO, "GLA:   slot[%zu] usbCh=%u entityId=0x%llx name='%s'",
-                    i, map[i].channelIndex,
-                    (unsigned long long) map[i].entityId,
+            syslog (LOG_INFO, "GLA:   slot[%zu] entityId=0x%llx name='%s'",
+                    i, (unsigned long long) map[i].entityId,
                     map[i].displayName);
         ipc.broadcastChannelMap (map);
-        if (onChannelMap) onChannelMap (map);
+        if (onChannelMap) onChannelMap (slots);
     }
 
     // Resize routing to n slots, all unassigned (channelIndex=0xFF = silence).
     // Call whenever the bridge or listener changes.
     void resetSlots (int n)
     {
+        std::vector<SlotConfig> slots (static_cast<size_t> (std::max (0, n)));
         {
             std::lock_guard<std::mutex> lk (mutex);
-            routing.assign (static_cast<size_t> (std::max (0, n)),
-                            RoutingEntry { 0xFF, 0, "" });
+            routing.assign (slots.size(), RoutingEntry { 0xFF, 0, "" });
+            rebuildMatrix();
         }
         auto map = buildChannelMap();
         ipc.broadcastChannelMap (map);
-        if (onChannelMap) onChannelMap (map);
+        if (onChannelMap) onChannelMap (slots);
     }
 
     // Assign USB input channel usbChannel to virtual output slot slot.
@@ -156,10 +158,11 @@ public:
             std::lock_guard<std::mutex> lk (mutex);
             if (slot < 0 || slot >= static_cast<int> (routing.size())) return;
             routing[static_cast<size_t> (slot)] = { usbChannel, entityId, displayName };
+            rebuildMatrix();
         }
         auto map = buildChannelMap();
         ipc.broadcastChannelMap (map);
-        if (onChannelMap) onChannelMap (map);
+        if (onChannelMap) onChannelMap (buildSlotConfigs());
     }
 
     // Unassign virtual output slot slot (outputs silence; slot still exists in driver).
@@ -169,10 +172,11 @@ public:
             std::lock_guard<std::mutex> lk (mutex);
             if (slot < 0 || slot >= static_cast<int> (routing.size())) return;
             routing[static_cast<size_t> (slot)] = { 0xFF, 0, "" };
+            rebuildMatrix();
         }
         auto map = buildChannelMap();
         ipc.broadcastChannelMap (map);
-        if (onChannelMap) onChannelMap (map);
+        if (onChannelMap) onChannelMap (buildSlotConfigs());
     }
 
     void setUSBBridge (const std::string& uid, const std::string& name = "")
@@ -193,6 +197,13 @@ public:
         uint8_t     channelIndex;
         uint64_t    talkerEntityId; // 0 = no AVDECC source
         std::string sourceName;     // empty if no source
+
+        bool operator== (const USBChannelInfo& o) const noexcept
+        {
+            return channelIndex   == o.channelIndex
+                && talkerEntityId == o.talkerEntityId
+                && sourceName     == o.sourceName;
+        }
     };
 
     // Returns one entry per USB input channel (0-based, count = totalChannels),
@@ -203,64 +214,56 @@ public:
         std::vector<USBChannelInfo> result;
         if (totalChannels <= 0) return result;
 
+        // Always produce exactly totalChannels entries indexed by CoreAudio channel
+        // position. AVDECC is used only to annotate channels with source names —
+        // it never controls how many slots we create.
+        result.resize (static_cast<size_t> (totalChannels));
+        for (int i = 0; i < totalChannels; ++i)
+        {
+            result[static_cast<size_t> (i)].channelIndex   = static_cast<uint8_t> (i);
+            result[static_cast<size_t> (i)].talkerEntityId = 0;
+            result[static_cast<size_t> (i)].sourceName     = "";
+        }
+
         syslog (LOG_INFO, "GLA: getUSBChannelInfos: CoreAudio channels=%d entityId=0x%llx",
                 totalChannels, (unsigned long long) bridgeEntityId);
 
-        if (bridgeEntityId == 0)
-        {
-            // No AVDECC entity selected — show CoreAudio channels with no source info
-            result.resize (static_cast<size_t> (totalChannels));
-            for (int i = 0; i < totalChannels; ++i)
-            {
-                result[static_cast<size_t> (i)].channelIndex   = static_cast<uint8_t> (i);
-                result[static_cast<size_t> (i)].talkerEntityId = 0;
-                result[static_cast<size_t> (i)].sourceName     = "";
-            }
-            syslog (LOG_INFO, "GLA:   no AVDECC entity, showing %d CoreAudio channels", totalChannels);
-            return result;
-        }
+        if (!bridgeEntityId) return result;
 
         auto streamConns = avdecc.getListenerConnections (bridgeEntityId);
-        int streamCount  = static_cast<int> (streamConns.size());
-        syslog (LOG_INFO, "GLA:   AVDECC stream inputs=%d", streamCount);
+        syslog (LOG_INFO, "GLA:   AVDECC stream inputs=%d", (int) streamConns.size());
 
-        if (streamCount == 0)
-        {
-            // Entity found but no stream inputs — fall back to CoreAudio count
-            result.resize (static_cast<size_t> (totalChannels));
-            for (int i = 0; i < totalChannels; ++i)
-            {
-                result[static_cast<size_t> (i)].channelIndex   = static_cast<uint8_t> (i);
-                result[static_cast<size_t> (i)].talkerEntityId = 0;
-                result[static_cast<size_t> (i)].sourceName     = "";
-            }
-            syslog (LOG_WARNING, "GLA:   entity has no stream inputs, falling back to CoreAudio channels=%d", totalChannels);
-            return result;
-        }
+        if (streamConns.empty()) return result;
 
         auto entities = avdecc.getEntities();
-        int channelIndex = 0;
 
+        // Streams are in ascending streamIndex order. Each stream occupies consecutive
+        // CoreAudio channels starting at channelOffset. Annotate those positions with
+        // the connected talker's name; stop if we run off the end of the CoreAudio range.
+        int channelOffset = 0;
         for (auto const& sc : streamConns)
         {
-            std::string sourceName;
-            for (auto const& e : entities)
-                if (e.id == sc.talkerEntityId) { sourceName = e.name; break; }
-
-            syslog (LOG_INFO, "GLA:   stream[%d] talker=0x%llx channels=%d source='%s'",
-                    sc.streamIndex, (unsigned long long) sc.talkerEntityId, sc.channelCount, sourceName.c_str());
-
-            for (int ch = 0; ch < sc.channelCount; ++ch)
+            if (sc.talkerEntityId != 0)
             {
-                USBChannelInfo info;
-                info.channelIndex   = static_cast<uint8_t> (channelIndex++);
-                info.talkerEntityId = sc.talkerEntityId;
-                info.sourceName     = sourceName;
-                result.push_back (info);
+                std::string sourceName;
+                for (auto const& e : entities)
+                    if (e.id == sc.talkerEntityId) { sourceName = e.name; break; }
+
+                syslog (LOG_INFO, "GLA:   stream[%d] talker=0x%llx ch=%d offset=%d source='%s'",
+                        sc.streamIndex, (unsigned long long) sc.talkerEntityId,
+                        sc.channelCount, channelOffset, sourceName.c_str());
+
+                for (int ch = 0; ch < sc.channelCount; ++ch)
+                {
+                    int physCh = channelOffset + ch;
+                    if (physCh >= totalChannels) break;
+                    result[static_cast<size_t> (physCh)].talkerEntityId = sc.talkerEntityId;
+                    result[static_cast<size_t> (physCh)].sourceName     = sourceName;
+                }
             }
+            channelOffset += sc.channelCount;
         }
 
-        syslog (LOG_INFO, "GLA:   total AVDECC-derived channels=%d", channelIndex);
         return result;
     }
 
@@ -337,6 +340,17 @@ private:
         return false;
     }
 
+    std::vector<SlotConfig> buildSlotConfigs() const
+    {
+        std::vector<SlotConfig> configs;
+        std::lock_guard<std::mutex> lk (mutex);
+
+        for (auto const& r : routing)
+            configs.push_back ({ r.channelIndex, r.entityId, r.displayName });
+
+        return configs;
+    }
+
     std::vector<GLAChannelEntry> buildChannelMap() const
     {
         std::vector<GLAChannelEntry> entries;
@@ -345,13 +359,27 @@ private:
         for (auto const& r : routing)
         {
             GLAChannelEntry e{};
-            e.channelIndex = r.channelIndex;
             e.entityId = r.entityId;
             strncpy (e.displayName, r.displayName.c_str(), sizeof (e.displayName) - 1);
             entries.push_back (e);
         }
 
         return entries;
+    }
+
+    // Must be called under mutex. Rebuilds the channel matrix from current routing.
+    void rebuildMatrix()
+    {
+        matrix_.numDstChannels = static_cast<uint32_t> (routing.size());
+        matrix_.routes.clear();
+
+        for (uint32_t slot = 0; slot < routing.size(); ++slot)
+        {
+            const uint8_t src = routing[slot].channelIndex;
+
+            if (src != 0xFF)
+                matrix_.routes.push_back ({ src, static_cast<uint8_t> (slot) });
+        }
     }
 
     std::vector<GLAEntityInfo> buildEntityList() const
@@ -381,13 +409,23 @@ private:
 
         usbCapture.start (uid, [this] (uint32_t ch, uint32_t fr, double rate, const float* data)
         {
-            ipc.sendAudioData (ch, fr, rate, data);
+            GLAChannelMatrix mat;
+            {
+                std::lock_guard<std::mutex> lk (mutex);
+                mat = matrix_;
+            }
+
+            mappedAudio_.resize (mat.numDstChannels * fr);
+            mat.apply (data, ch, mappedAudio_.data(), fr);
+            ipc.sendAudioData (mat.numDstChannels, fr, rate, mappedAudio_.data());
         });
     }
 
     //==============================================================================
     mutable std::mutex mutex;
     std::vector<RoutingEntry> routing;
+    GLAChannelMatrix  matrix_;
+    std::vector<float> mappedAudio_;
     std::string usbBridgeUID;
     std::string usbBridgeName;
 

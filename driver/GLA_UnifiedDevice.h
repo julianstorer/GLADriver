@@ -7,7 +7,6 @@
 #include <dispatch/dispatch.h>
 #include <functional>
 #include <memory>
-#include <unordered_map>
 #include <vector>
 #include <mach/mach_time.h>
 #include <syslog.h>
@@ -32,10 +31,7 @@ struct GLAUnifiedDevice  : public aspl::Device
         hostTicksPerFrame = (double (tb.denom) / double (tb.numer)) * 1e9 / sampleRate_;
 
         for (size_t i = 0; i < channelEntries.size(); ++i)
-        {
-            channelToSlot[channelEntries[i].channelIndex] = i;
             rings->push_back (std::make_unique<GLAResamplingFIFO> (double (sampleRate_)));
-        }
     }
 
     ~GLAUnifiedDevice() override
@@ -81,16 +77,12 @@ struct GLAUnifiedDevice  : public aspl::Device
             }
 
             entries = newEntries;
-            channelToSlot.clear();
 
             auto newRings = std::make_shared<FifoVec>();
             const UInt32 nCh = static_cast<UInt32> (newEntries.size());
 
             for (size_t i = 0; i < newEntries.size(); ++i)
-            {
-                channelToSlot[newEntries[i].channelIndex] = i;
                 newRings->push_back (std::make_unique<GLAResamplingFIFO> (double (sampleRate_)));
-            }
 
             rings = newRings;
 
@@ -161,13 +153,23 @@ struct GLAUnifiedDevice  : public aspl::Device
             inDataSize, outDataSize, outData);
     }
 
-    //==============================================================================
-    GLAResamplingFIFO* getChannelFIFO (int channelIndex)
+    // Update channel entry metadata (names, entityIds) without reconfiguring the
+    // device. Only valid when newEntries.size() == entries.size(). Called from the
+    // fast path in applyChannelMap when only annotations change, not channel count.
+    void updateEntries (const std::vector<GLAChannelEntry>& newEntries)
     {
-        auto it = channelToSlot.find (channelIndex);
-        if (it == channelToSlot.end()) return nullptr;
-        return (*rings)[it->second].get();
+        if (newEntries.size() == entries.size())
+            entries = newEntries;
     }
+
+    //==============================================================================
+    GLAResamplingFIFO* getChannelFIFO (uint32_t slotIndex)
+    {
+        if (slotIndex >= rings->size()) return nullptr;
+        return (*rings)[slotIndex].get();
+    }
+
+    size_t getRingCount() const { return rings ? rings->size() : 0; }
 
     static constexpr UInt32 sampleRate_  = 48000;
     static constexpr UInt32 zeroTsPeriod = 512;
@@ -202,6 +204,18 @@ protected:
 
         const auto period = static_cast<UInt64> (GetZeroTimeStampPeriod());
         const double ticksPerPeriod = tpf * static_cast<double> (period);
+
+        // Belt-and-suspenders: period is a compile-time constant (512) so this
+        // can't happen, but a zero here makes newCtr blow up to UINT64_MAX and
+        // coreaudiod spin at 100% CPU.
+        if (ticksPerPeriod <= 0.0)
+        {
+            *outSampleTime = 0.0;
+            *outHostTime   = mach_absolute_time();
+            *outSeed       = 1;
+            return kAudioHardwareNoError;
+        }
+
         const UInt64 now = mach_absolute_time();
         // Advance counter to the current period in one shot — incrementing by 1
         // per call causes coreaudiod to spin at 100% CPU if many periods have elapsed.
@@ -336,9 +350,8 @@ private:
     };
 
     //==============================================================================
-    std::vector<GLAChannelEntry>    entries;
-    std::unordered_map<int, size_t> channelToSlot;
-    std::shared_ptr<FifoVec>        rings;
+    std::vector<GLAChannelEntry> entries;
+    std::shared_ptr<FifoVec>     rings;
     std::shared_ptr<aspl::Stream>   stream_;   // null for stubs
 
     std::atomic<UInt64> anchorHostTime { 0 };

@@ -28,7 +28,6 @@ enum class GLAMsgType : uint32_t
 
 struct GLAChannelEntry
 {
-    uint8_t  channelIndex;
     uint64_t entityId;
     char     displayName[64]; // UTF-8, null-terminated
 };

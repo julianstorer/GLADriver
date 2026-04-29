@@ -46,7 +46,7 @@ public:
             onEntityListReceived (e);
         });
 
-        backend.setChannelMapCallback ([this] (const std::vector<GLAChannelEntry>& m)
+        backend.setChannelMapCallback ([this] (const std::vector<AppBackend::SlotConfig>& m)
         {
             onChannelMapReceived (m);
         });
@@ -241,31 +241,37 @@ private:
         else
             comboListener.setSelectedId (1, juce::dontSendNotification);
 
+        // Only rebuild patchbay (which sends a channel map to the driver) if the
+        // listener's stream topology actually changed. Entity online/offline events
+        // that don't affect the selected listener must not trigger RequestConfigurationChange.
+        auto prevInfos = usbChannelInfos;
         refreshBridgeStreamInfo();
-        rebuildPatchbay();
+
+        if (usbChannelInfos != prevInfos)
+            rebuildPatchbay();
     }
 
-    void onChannelMapReceived (const std::vector<GLAChannelEntry>& entries)
+    void onChannelMapReceived (const std::vector<AppBackend::SlotConfig>& slots)
     {
-        channelMap = entries;
+        channelMap = slots;
         syncCombosToMap();
     }
 
     void syncCombosToMap()
     {
-        // channelMap[i] is slot i. channelIndex==0xFF means unassigned.
+        // channelMap[i] is slot i. usbChannel==0xFF means unassigned.
         for (int i = 0; i < static_cast<int> (patchRows.size()); ++i)
         {
             auto& row = patchRows[static_cast<size_t> (i)];
             if (i >= static_cast<int> (channelMap.size())
-                || channelMap[static_cast<size_t> (i)].channelIndex == 0xFF)
+                || channelMap[static_cast<size_t> (i)].usbChannel == 0xFF)
             {
                 row.usbChannel = -1;
                 row.combo->setSelectedId (1000, juce::dontSendNotification);
             }
             else
             {
-                int usbCh = static_cast<int> (channelMap[static_cast<size_t> (i)].channelIndex);
+                int usbCh = static_cast<int> (channelMap[static_cast<size_t> (i)].usbChannel);
                 row.usbChannel = usbCh;
                 row.combo->setSelectedId (usbCh + 1, juce::dontSendNotification);
             }
@@ -299,7 +305,7 @@ private:
                 if (ch < static_cast<int> (usbChannelInfos.size()))
                 {
                     auto const& info = usbChannelInfos[static_cast<size_t> (ch)];
-                    s.usbChannel  = static_cast<uint8_t> (ch);
+                    s.usbChannel  = info.channelIndex;
                     s.entityId    = info.talkerEntityId;
                     s.displayName = info.sourceName;
                 }
@@ -356,7 +362,7 @@ private:
 
     std::vector<PatchRow> patchRows;
     std::vector<GLAEntityInfo> entities;
-    std::vector<GLAChannelEntry> channelMap;
+    std::vector<AppBackend::SlotConfig> channelMap;
     std::vector<AppBackend::USBChannelInfo> usbChannelInfos;
 
     int      bridgeChannelCount    = 0;

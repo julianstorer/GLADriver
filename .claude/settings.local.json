@@ -6,7 +6,10 @@
       "Bash(cmake --build .)",
       "Bash(./run build-monitor *)",
       "Bash(cmake --build build --config Debug)",
-      "Bash(cmake --build build)"
+      "Bash(cmake --build build)",
+      "Bash(git show *)",
+      "Read(//tmp/**)",
+      "Bash(cmake --build . --target test_ipc_protocol)"
     ]
   }
 }

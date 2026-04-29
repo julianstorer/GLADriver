@@ -56,8 +56,7 @@ struct GLADriver  : public aspl::Driver
             // Initialize() returns. Use a 1-channel stub so the driver stays
             // loaded; the IPC thread will replace it once the app sends a real map.
             GLAChannelEntry stub {};
-            stub.channelIndex = 0;
-            stub.entityId     = 0;
+            stub.entityId = 0;
             strncpy (stub.displayName, "GLA (unconfigured)", sizeof (stub.displayName) - 1);
             map.push_back (stub);
             glaLog (LOG_INFO, "GLA: no channel map available, registering stub device");
@@ -99,7 +98,7 @@ struct GLADriver  : public aspl::Driver
                 plugin->RemoveDevice (unifiedDevice);
                 {
                     std::lock_guard<std::mutex> lk (fifoMutex_);
-                    channelFifos_.clear();
+                    slotFifos_.clear();
                 }
                 unifiedDevice.reset();
             }
@@ -125,17 +124,7 @@ struct GLADriver  : public aspl::Driver
             if (! isStub)
             {
                 std::lock_guard<std::mutex> lk (fifoMutex_);
-                channelFifos_.clear();
-
-                for (const auto& e : entries)
-                {
-                    const uint32_t ch = static_cast<uint32_t> (e.channelIndex);
-
-                    if (ch >= channelFifos_.size())
-                        channelFifos_.resize (ch + 1, nullptr);
-
-                    channelFifos_[ch] = unifiedDevice->getChannelFIFO (e.channelIndex);
-                }
+                buildFifoTable (entries);
             }
 
             glaLog (LOG_INFO, "GLA: applied channel map (%zu sources)", entries.size());
@@ -149,7 +138,7 @@ struct GLADriver  : public aspl::Driver
             plugin->RemoveDevice (unifiedDevice);
             {
                 std::lock_guard<std::mutex> lk (fifoMutex_);
-                channelFifos_.clear();
+                slotFifos_.clear();
             }
             unifiedDevice.reset();
 
@@ -158,7 +147,22 @@ struct GLADriver  : public aspl::Driver
             return;
         }
 
-        // --- Existing device, normal non-stub update: reconfigure in-place ---
+        // --- Existing device, same channel count: metadata-only update ---
+        // RequestConfigurationChange tells coreaudiod to quiesce all IO clients.
+        // If only channel names changed (not count), skip the full reconfigure and
+        // just refresh FIFOs + entry metadata — avoids coreaudiod spinning at 100%
+        // CPU on rapid updates.
+        if (entries.size() == unifiedDevice->getRingCount())
+        {
+            glaLog (LOG_INFO, "GLA: same-count update (%zu ch), skipped reconfigure",
+                    entries.size());
+            unifiedDevice->updateEntries (entries);
+            std::lock_guard<std::mutex> lk (fifoMutex_);
+            buildFifoTable (entries);
+            return;
+        }
+
+        // --- Existing device, channel count changed: reconfigure in-place ---
         //
         // We MUST NOT do RemoveDevice + AddDevice here. Both operations share the
         // same DeviceUID string. If coreaudiod processes the PropertiesChanged
@@ -175,12 +179,12 @@ struct GLADriver  : public aspl::Driver
 
         const uint32_t thisGen = ++reconfigGeneration;
 
-        // Null out FIFO pointers before the reconfigure starts. updateChannelMap
+        // Clear FIFO table before the reconfigure starts. updateChannelMap
         // destroys the old rings before calling onRingsReady — without this clear,
         // handleAudioData could dereference a dangling pointer in that window.
         {
             std::lock_guard<std::mutex> lk (fifoMutex_);
-            channelFifos_.clear();
+            slotFifos_.clear();
         }
 
         unifiedDevice->updateChannelMap (entries, [this, entries, thisGen]()
@@ -194,20 +198,10 @@ struct GLADriver  : public aspl::Driver
             }
 
             // Runs on HAL non-realtime thread inside PerformConfigurationChange.
-            // New rings are live; update the FIFO pointer table.
+            // New rings are live; rebuild the FIFO table.
             {
                 std::lock_guard<std::mutex> lk (fifoMutex_);
-                channelFifos_.clear();
-
-                for (const auto& e : entries)
-                {
-                    const uint32_t ch = static_cast<uint32_t> (e.channelIndex);
-
-                    if (ch >= channelFifos_.size())
-                        channelFifos_.resize (ch + 1, nullptr);
-
-                    channelFifos_[ch] = unifiedDevice->getChannelFIFO (e.channelIndex);
-                }
+                buildFifoTable (entries);
             }
 
             glaLog (LOG_INFO, "GLA: in-place reconfigure complete (%zu sources)", entries.size());
@@ -216,9 +210,35 @@ struct GLADriver  : public aspl::Driver
 
 private:
     //==============================================================================
+    // Must be called with fifoMutex_ held. Maps slot index directly to FIFO pointer;
+    // the app has already applied channel remapping before sending audio.
+    void buildFifoTable (const std::vector<GLAChannelEntry>& entries)
+    {
+        const size_t n = entries.size();
+        slotFifos_.resize (n, nullptr);
+
+        for (size_t i = 0; i < n; ++i)
+        {
+            slotFifos_[i] = unifiedDevice->getChannelFIFO (static_cast<uint32_t> (i));
+            glaLog (LOG_INFO, "GLA:   slot=%zu  fifo=%s", i, slotFifos_[i] ? "ok" : "NULL");
+        }
+    }
+
     void handleAudioData (uint32_t channelCount, uint32_t frameCount,
                           double sourceRate, const float* interleaved)
     {
+        // Sanity-check dimensions before touching any data.
+        static constexpr uint32_t kMaxSaneChannels = 256;
+        static constexpr uint32_t kMaxSaneFrames   = 65536;
+
+        if (channelCount == 0 || channelCount > kMaxSaneChannels ||
+            frameCount   == 0 || frameCount   > kMaxSaneFrames)
+        {
+            glaLog (LOG_WARNING, "GLA: dropping malformed AudioData (ch=%u, frames=%u)",
+                    channelCount, frameCount);
+            return;
+        }
+
         const bool doLog = ((++audioDataCallCount_ % 500) == 0);
 
         // Compute peak for diagnostics.
@@ -245,22 +265,29 @@ private:
             {
                 lastAudioSourceRate_ = sourceRate;
 
-                for (auto* fifo : channelFifos_)
+                for (auto* fifo : slotFifos_)
                     if (fifo) fifo->setSourceRate (sourceRate);
             }
 
             if (audioScratch_.size() < frameCount)
                 audioScratch_.resize (frameCount);
 
-            for (uint32_t ch = 0; ch < channelCount; ++ch)
+            // Direct copy: channel N in the packet maps to output slot N.
+            // The app has already applied remapping; the driver is just a passthrough.
+            // If the packet has fewer channels than slots, surplus slots drain to silence.
+            // If the packet has more channels than slots, surplus channels are ignored.
+            const uint32_t activeCh = std::min (channelCount,
+                                                 static_cast<uint32_t> (slotFifos_.size()));
+
+            for (uint32_t ch = 0; ch < activeCh; ++ch)
             {
-                if (ch >= channelFifos_.size() || ! channelFifos_[ch])
+                if (! slotFifos_[ch])
                     continue;
 
                 for (uint32_t f = 0; f < frameCount; ++f)
                     audioScratch_[f] = interleaved[f * channelCount + ch];
 
-                channelFifos_[ch]->write (audioScratch_.data(), frameCount);
+                slotFifos_[ch]->write (audioScratch_.data(), frameCount);
             }
         }
 
@@ -347,10 +374,11 @@ private:
     std::shared_ptr<GLAIPCClient> ipcClient;
     std::shared_ptr<GLAUnifiedDevice> unifiedDevice;
 
-    // Audio data path: written by IPC thread, pointers updated by HAL non-realtime thread.
-    std::mutex                     fifoMutex_;
-    std::vector<GLAResamplingFIFO*> channelFifos_;
-    std::vector<float>             audioScratch_;
+    // FIFO table indexed by output slot (= channel index in IPC audio packet).
+    // Written by HAL non-realtime thread (applyChannelMap), read by IPC thread (handleAudioData).
+    std::mutex                      fifoMutex_;
+    std::vector<GLAResamplingFIFO*> slotFifos_;
+    std::vector<float>              audioScratch_;
 
     uint64_t audioDataCallCount_  = 0;
     double   lastAudioSourceRate_ = 0.0;

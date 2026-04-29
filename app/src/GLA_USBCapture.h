@@ -85,8 +85,9 @@ struct GLAUSBCapture
         if (! running_) return;
         AudioDeviceStop (deviceId_, ioProcId_);
         AudioDeviceDestroyIOProcID (deviceId_, ioProcId_);
-        ioProcId_ = nullptr;
-        running_  = false;
+        ioProcId_     = nullptr;
+        running_      = false;
+        layoutLogged_ = false;
         stopSender();
         callback_ = {};
         syslog (LOG_INFO, "GLA: USBCapture stopped");
@@ -188,18 +189,39 @@ private:
         if (! callback_ || ! inputData || inputData->mNumberBuffers == 0)
             return noErr;
 
-        const auto& buf0 = inputData->mBuffers[0];
+        // Log actual device buffer layout once per capture session.
+        if (! layoutLogged_)
+        {
+            layoutLogged_ = true;
+            syslog (LOG_INFO, "GLA: USBCapture layout: %u AudioBuffer(s)",
+                    inputData->mNumberBuffers);
+            for (UInt32 b = 0; b < inputData->mNumberBuffers; ++b)
+                syslog (LOG_INFO, "GLA:   buf[%u]: %u ch  %u bytes",
+                        b,
+                        inputData->mBuffers[b].mNumberChannels,
+                        inputData->mBuffers[b].mDataByteSize);
+        }
 
-        if (! buf0.mData || buf0.mDataByteSize == 0 || buf0.mNumberChannels == 0)
+        // Sum channels and derive frame count across all buffers.
+        // Devices with multiple streams present one AudioBuffer per stream.
+        uint32_t totalChannels = 0;
+        uint32_t frameCount    = 0;
+
+        for (UInt32 b = 0; b < inputData->mNumberBuffers; ++b)
+        {
+            const auto& buf = inputData->mBuffers[b];
+
+            if (! buf.mData || buf.mDataByteSize == 0 || buf.mNumberChannels == 0)
+                continue;
+
+            totalChannels += buf.mNumberChannels;
+
+            if (frameCount == 0)
+                frameCount = buf.mDataByteSize / (sizeof (float) * buf.mNumberChannels);
+        }
+
+        if (totalChannels == 0 || frameCount == 0)
             return noErr;
-
-        const uint32_t totalChannels = buf0.mNumberChannels;
-        const uint32_t frameCount    = buf0.mDataByteSize / (sizeof (float) * totalChannels);
-
-        if (frameCount == 0)
-            return noErr;
-
-        const float* src = static_cast<const float*> (buf0.mData);
 
         // try_lock: never block on the real-time IO thread.
         // If the sender is still busy with the previous frame, drop this one.
@@ -208,7 +230,28 @@ private:
         if (! lk.owns_lock() || senderHasData_)
             return noErr;
 
-        pendingData_.assign (src, src + totalChannels * frameCount);
+        // Build one flat interleaved array: append each buffer's channels in order.
+        // Stream 0 occupies positions 0..n0-1, stream 1 at n0..n0+n1-1, etc.
+        pendingData_.resize (totalChannels * frameCount);
+        uint32_t chOffset = 0;
+
+        for (UInt32 b = 0; b < inputData->mNumberBuffers; ++b)
+        {
+            const auto& buf = inputData->mBuffers[b];
+
+            if (! buf.mData || buf.mDataByteSize == 0 || buf.mNumberChannels == 0)
+                continue;
+
+            const float*   src = static_cast<const float*> (buf.mData);
+            const uint32_t nCh = buf.mNumberChannels;
+
+            for (uint32_t f = 0; f < frameCount; ++f)
+                for (uint32_t c = 0; c < nCh; ++c)
+                    pendingData_[f * totalChannels + chOffset + c] = src[f * nCh + c];
+
+            chOffset += nCh;
+        }
+
         pendingChannels_ = totalChannels;
         pendingFrames_   = frameCount;
         pendingRate_     = sourceRate_;
@@ -219,10 +262,11 @@ private:
     }
 
     //==============================================================================
-    AudioDeviceID       deviceId_   = kAudioDeviceUnknown;
-    AudioDeviceIOProcID ioProcId_   = nullptr;
-    bool                running_    = false;
-    double              sourceRate_ = 48000.0;
+    AudioDeviceID       deviceId_      = kAudioDeviceUnknown;
+    AudioDeviceIOProcID ioProcId_      = nullptr;
+    bool                running_       = false;
+    bool                layoutLogged_  = false;
+    double              sourceRate_    = 48000.0;
     AudioCallback       callback_;
 
     std::thread             senderThread_;

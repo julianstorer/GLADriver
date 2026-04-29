@@ -146,6 +146,10 @@ private:
             memcpy (&frameCount,   msg.data() +  8, 4);
             memcpy (&sourceRate,   msg.data() + 12, 8);
 
+            if (channelCount == 0 || channelCount > 512 ||
+                frameCount   == 0 || frameCount   > 8192)
+                return;
+
             const uint64_t expectedBytes = static_cast<uint64_t> (channelCount) * frameCount * sizeof (float);
 
             if (msg.size() < 20 + expectedBytes)

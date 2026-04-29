@@ -6,12 +6,10 @@
 static void testChannelMapSerialize()
 {
     std::vector<GLAChannelEntry> entries(2);
-    entries[0].channelIndex = 0;
-    entries[0].entityId     = 0xDEADBEEF12345678ULL;
+    entries[0].entityId = 0xDEADBEEF12345678ULL;
     strncpy(entries[0].displayName, "Bob's Guitar", sizeof(entries[0].displayName) - 1);
 
-    entries[1].channelIndex = 1;
-    entries[1].entityId     = 0xCAFEBABE00000001ULL;
+    entries[1].entityId = 0xCAFEBABE00000001ULL;
     strncpy(entries[1].displayName, "Alice's Vocals", sizeof(entries[1].displayName) - 1);
 
     auto buf = serializeChannelMapUpdate(entries);
@@ -29,11 +27,9 @@ static void testChannelMapSerialize()
     std::vector<GLAChannelEntry> decoded(count);
     memcpy(decoded.data(), buf.data() + 8, count * sizeof(GLAChannelEntry));
 
-    assert(decoded[0].channelIndex == 0);
-    assert(decoded[0].entityId     == 0xDEADBEEF12345678ULL);
+    assert(decoded[0].entityId == 0xDEADBEEF12345678ULL);
     assert(strcmp(decoded[0].displayName, "Bob's Guitar") == 0);
-    assert(decoded[1].channelIndex == 1);
-    assert(decoded[1].entityId     == 0xCAFEBABE00000001ULL);
+    assert(decoded[1].entityId == 0xCAFEBABE00000001ULL);
     assert(strcmp(decoded[1].displayName, "Alice's Vocals") == 0);
 
     printf("testChannelMapSerialize: PASS\n");

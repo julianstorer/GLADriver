@@ -65,5 +65,8 @@ else
     /usr/bin/log show --last 30s --info \
         --predicate 'process == "coreaudiod" AND (eventMessage CONTAINS "error" OR eventMessage CONTAINS "crash" OR eventMessage CONTAINS "fault")' \
         2>/dev/null | tail -10 || true
+    echo ""
+    echo "==> Auto-recovering: removing broken driver to restore audio..."
+    "$SCRIPT_DIR/recover-driver.sh"
     exit 1
 fi
