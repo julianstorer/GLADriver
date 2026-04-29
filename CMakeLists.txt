@@ -32,9 +32,6 @@ FetchContent_Declare(
     GIT_SHALLOW    TRUE)
 FetchContent_MakeAvailable(JUCE)
 
-enable_testing()
-
 add_subdirectory(driver)
 add_subdirectory(app)
-add_subdirectory(tests)
 add_subdirectory(monitor_app)

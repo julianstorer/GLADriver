@@ -239,21 +239,7 @@ private:
             return;
         }
 
-        const bool doLog = ((++audioDataCallCount_ % 500) == 0);
-
-        // Compute peak for diagnostics.
-        float peak = 0.0f;
-
-        if (doLog)
-        {
-            const uint32_t total = channelCount * frameCount;
-
-            for (uint32_t i = 0; i < total; ++i)
-            {
-                const float v = interleaved[i] < 0 ? -interleaved[i] : interleaved[i];
-                if (v > peak) peak = v;
-            }
-        }
+        ++audioDataCallCount_;
 
         {
             std::lock_guard<std::mutex> lk (fifoMutex_);
@@ -291,10 +277,6 @@ private:
             }
         }
 
-        if (doLog)
-            glaLog (LOG_INFO,
-                    "GLA: AudioData #%llu  ch=%u  frames=%u  peak=%.6f",
-                    (unsigned long long) audioDataCallCount_, channelCount, frameCount, peak);
     }
 
     //==============================================================================

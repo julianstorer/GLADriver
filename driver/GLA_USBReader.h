@@ -179,9 +179,7 @@ private:
         auto buffers = channelBuffers;
         mapMutex.unlock();
 
-        const bool doLog = ((++ioProcCallCount % 500) == 0);
-        int wiredFifos = 0;
-        for (auto* f : buffers) if (f) ++wiredFifos;
+        ++ioProcCallCount;
 
         int globalCh = 0;
 
@@ -216,31 +214,6 @@ private:
             }
         }
 
-        // Accumulate peak magnitude across all processed buffers this cycle.
-        for (UInt32 b = 0; b < inputData->mNumberBuffers; ++b)
-        {
-            const auto& abuf = inputData->mBuffers[b];
-            if (! abuf.mData || abuf.mDataByteSize == 0) continue;
-            const float* src = static_cast<const float*> (abuf.mData);
-            const UInt32 total = abuf.mDataByteSize / sizeof (float);
-            for (UInt32 i = 0; i < total; ++i)
-            {
-                const float v = src[i] < 0 ? -src[i] : src[i];
-                if (v > ioProcPeak) ioProcPeak = v;
-            }
-        }
-
-        if (doLog)
-        {
-            glaLog (LOG_INFO,
-                    "GLA: USBReader IOProc #%llu  bufs=%u  wiredFIFOs=%d/%d  peak=%.6f",
-                    (unsigned long long) ioProcCallCount,
-                    inputData->mNumberBuffers,
-                    wiredFifos, static_cast<int> (buffers.size()),
-                    ioProcPeak);
-            ioProcPeak = 0.0f;
-        }
-
         return noErr;
     }
 
@@ -252,5 +225,4 @@ private:
     std::vector<GLAResamplingFIFO*> channelBuffers;
     std::vector<float> scratch;
     uint64_t ioProcCallCount = 0;
-    float    ioProcPeak      = 0.0f;
 };

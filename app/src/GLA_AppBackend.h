@@ -237,9 +237,17 @@ public:
 
         auto entities = avdecc.getEntities();
 
-        // Streams are in ascending streamIndex order. Each stream occupies consecutive
-        // CoreAudio channels starting at channelOffset. Annotate those positions with
-        // the connected talker's name; stop if we run off the end of the CoreAudio range.
+        // Streams are in ascending streamIndex order.
+        //
+        // The bridge hardware allocates a fixed number of USB channels per input
+        // group (stride) regardless of how many AVDECC audio channels the stream
+        // descriptor advertises. Derive the stride from the CoreAudio channel count
+        // divided by the number of streams. This is exact for equal-sized groups
+        // (the common case); for unequal groups the AVDECC entity model would need
+        // to be consulted, but that is not worth the complexity here.
+        const int numStreams = static_cast<int> (streamConns.size());
+        const int stride     = (numStreams > 0) ? (totalChannels / numStreams) : totalChannels;
+
         int channelOffset = 0;
         for (auto const& sc : streamConns)
         {
@@ -249,10 +257,6 @@ public:
                 for (auto const& e : entities)
                     if (e.id == sc.talkerEntityId) { sourceName = e.name; break; }
 
-                syslog (LOG_INFO, "GLA:   stream[%d] talker=0x%llx ch=%d offset=%d source='%s'",
-                        sc.streamIndex, (unsigned long long) sc.talkerEntityId,
-                        sc.channelCount, channelOffset, sourceName.c_str());
-
                 for (int ch = 0; ch < sc.channelCount; ++ch)
                 {
                     int physCh = channelOffset + ch;
@@ -261,7 +265,7 @@ public:
                     result[static_cast<size_t> (physCh)].sourceName     = sourceName;
                 }
             }
-            channelOffset += sc.channelCount;
+            channelOffset += stride;   // use hardware stride, not AVDECC channel count
         }
 
         return result;
@@ -380,6 +384,7 @@ private:
             if (src != 0xFF)
                 matrix_.routes.push_back ({ src, static_cast<uint8_t> (slot) });
         }
+
     }
 
     std::vector<GLAEntityInfo> buildEntityList() const

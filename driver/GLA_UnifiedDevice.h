@@ -284,13 +284,11 @@ private:
                                 void* bytes,
                                 UInt32 bytesCount) override
         {
-            const bool doLog = ((++callCount % 500) == 0);
+            ++callCount;
 
             if (numChannels == 0 || !rings)
             {
                 std::memset (bytes, 0, bytesCount);
-                if (doLog) glaLog (LOG_INFO, "GLA: OnReadClientInput #%llu  no channels/rings",
-                                   (unsigned long long) callCount);
                 return;
             }
 
@@ -299,45 +297,21 @@ private:
             if (frames > 4096)
             {
                 std::memset (bytes, 0, bytesCount);
-                if (doLog) glaLog (LOG_INFO, "GLA: OnReadClientInput #%llu  frames=%u > 4096, zeroing",
-                                   (unsigned long long) callCount, frames);
                 return;
             }
 
             std::memset (bytes, 0, bytesCount);
             auto out = static_cast<float*> (bytes);
 
-            int ringsWithData = 0;
-
             for (UInt32 ch = 0; ch < numChannels; ++ch)
             {
                 if (ch >= rings->size() || ! (*rings)[ch])
                     continue;
 
-                if ((*rings)[ch]->available() > 0) ++ringsWithData;
-
                 (*rings)[ch]->read (scratch, frames);
 
                 for (UInt32 f = 0; f < frames; ++f)
                     out[f * numChannels + ch] = scratch[f];
-            }
-
-            // Compute peak of the output buffer written this cycle.
-            float cyclePeak = 0.0f;
-            const UInt32 totalSamples = frames * numChannels;
-            for (UInt32 i = 0; i < totalSamples; ++i)
-            {
-                const float v = out[i] < 0 ? -out[i] : out[i];
-                if (v > cyclePeak) cyclePeak = v;
-            }
-            if (cyclePeak > readPeak) readPeak = cyclePeak;
-
-            if (doLog)
-            {
-                glaLog (LOG_INFO,
-                        "GLA: OnReadClientInput #%llu  frames=%u  ch=%u  ringsWithData=%d  peak=%.6f",
-                        (unsigned long long) callCount, frames, numChannels, ringsWithData, readPeak);
-                readPeak = 0.0f;
             }
         }
 
@@ -346,7 +320,6 @@ private:
         std::shared_ptr<FifoVec> rings;   // shared — outlives the device if an IO cycle is in flight
         float                    scratch[4096];
         uint64_t                 callCount = 0;
-        float                    readPeak  = 0.0f;
     };
 
     //==============================================================================

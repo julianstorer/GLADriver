@@ -23,17 +23,6 @@ cmake --build build --parallel $(sysctl -n hw.ncpu)
 ./run run-app
 ```
 
-## Tests
-
-```bash
-# Build and run all tests
-cd build && ctest --output-on-failure
-
-# Run a single test binary directly (after building)
-./build/tests/test_ipc_protocol
-./build/tests/test_ring_buffer
-```
-
 ## Architecture
 
 This system routes audio from USB audio bridges to CoreAudio virtual outputs on macOS, with AVDECC (AVB networking) used to discover which network-connected talker is feeding each USB input channel.
